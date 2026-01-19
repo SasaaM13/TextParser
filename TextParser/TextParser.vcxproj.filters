@@ -39,6 +39,33 @@
     <ClCompile Include="TextUIParser.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\Users\Sasa\Desktop\MR\external\csv-parser\include\internal\basic_csv_parser.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\Users\Sasa\Desktop\MR\external\csv-parser\include\internal\col_names.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\Users\Sasa\Desktop\MR\external\csv-parser\include\internal\csv_format.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\Users\Sasa\Desktop\MR\external\csv-parser\include\internal\csv_reader.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\Users\Sasa\Desktop\MR\external\csv-parser\include\internal\csv_reader_iterator.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\Users\Sasa\Desktop\MR\external\csv-parser\include\internal\csv_row.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\Users\Sasa\Desktop\MR\external\csv-parser\include\internal\csv_row_json.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\Users\Sasa\Desktop\MR\external\csv-parser\include\internal\csv_stat.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\Users\Sasa\Desktop\MR\external\csv-parser\include\internal\csv_utility.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\..\fast-cpp-csv-parser\csv.h">
@@ -63,6 +90,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="TextUIParser.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\Users\Sasa\Desktop\MR\external\csv-parser\include\external\hedley.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

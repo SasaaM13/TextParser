@@ -25,7 +25,7 @@
 #include <nlohmann/json.hpp>
 #include <tinyxml2.h>
 #include <pugixml.hpp>
-#include <vincentlaucsb-csv-parser/csv.hpp>
+#include "csv-parser/include/csv.hpp"
 #include <rapidcsv.h>
 #include <OpenXLSX/OpenXLSX.hpp>
 #include <xlnt/xlnt.hpp>
@@ -56,7 +56,7 @@ static bool RapidJSON_Count(const std::string& path, size_t& rows, size_t& cols,
     std::ifstream ifs(path, std::ios::binary);
     if(!ifs) { if(err) *err = "Cannot open file"; return false; }
     IStreamWrapper isw(ifs);
-    Document d;
+    rapidjson::Document d;
     d.ParseStream(isw);
     if(d.HasParseError()) {
         if(err) *err = GetParseError_En(d.GetParseError());
@@ -685,7 +685,7 @@ void TextParserUI::ParseFile(const std::string& filepath)
 
             CSVParser csv(filepath, opt);
             bool ok = csv.load();
-            if(ok) { r = csv.totalrowCount(); c = csv.colCount(); }
+            if(ok) { r = csv.rowCount(); c = csv.colCount(); }
             return ok;
             }));
 
@@ -729,7 +729,10 @@ void TextParserUI::ParseFile(const std::string& filepath)
         lines.push_back(RunOne("Custom XLSX", [&](size_t& r, size_t& c, std::string& e) {
             XLSXParser x(filepath);
             bool ok = x.load();
-            if(ok) { r = x.rowCount(); c = x.colCount(); }
+            if(ok) { 
+                r = x.rowCount(); c = x.colCount(); 
+                auto kind = x.cellKind(1, 1);
+            }
             return ok;
             }));
         lines.push_back(RunOne("OpenXLSX", [&](size_t& r, size_t& c, std::string& e) {

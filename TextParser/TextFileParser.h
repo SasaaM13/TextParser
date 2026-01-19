@@ -34,6 +34,17 @@ public:
         ONE_ZERO = 1 << 2     // "1"/"0"
     };
 
+    enum CellKind : uint8_t {
+        CK_Empty = 0,
+        CK_String = 1,
+        CK_Number = 2,
+        CK_Bool = 3,
+        CK_Date = 4,   // (rezervisano, kasnije)
+        CK_Formula = 5,
+        CK_Error = 6,
+        CK_Unknown = 7
+    };
+
     virtual ~TextFileParser() = default;
     virtual bool load() = 0;
 
@@ -45,6 +56,11 @@ public:
     virtual std::string_view valueView(size_t /*row*/, size_t /*col*/) const {
         static constexpr std::string_view empty{};
         return empty;
+    }
+
+    virtual CellKind cellKind(size_t row, size_t col) const {
+        auto v = valueView(row, col);
+        return v.empty() ? CellKind::CK_Empty : CellKind::CK_String;
     }
 
     // Kompatibilnost sa starim interfejsom: lenjo materijalizuje string
