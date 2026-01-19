@@ -4,31 +4,37 @@
 #include "TextFileParser.h"
 #include <string>
 #include <vector>
-#include <optional>
 #include <string_view>
-#include <filesystem>
-#include <thread>
-#include <mutex>
+#include <optional>
 #include <memory>
+#include <utility>
+#include <algorithm>
+#include <cstdint>
 
-// ===================================================
-//   UltraFast CSV Parser
-// ===================================================
-
-class CSVParser : public TextFileParser
-{
+class CSVParser final : public TextFileParser {
 public:
     struct Options {
         char delimiter = ',';
-        int  maxRows = -1;
-        int  maxCols = -1;
         bool hasHeader = false;
+
+        // FAST quote handling (toggle on '"'). If you KNOW there are no quotes, set false for max speed.
         bool allowQuotes = true;
+
+        // mmap input (recommended)
         bool useMMap = true;
-        size_t threadHint = std::thread::hardware_concurrency();
+
+        // If a row has fewer cols -> pad empty views.
+        // If a row has more cols -> ignore extra cells (fast & stable grid).
+        bool padMissingCells = true;
     };
 
     explicit CSVParser(std::string filename, Options opts = {});
+    ~CSVParser() override = default;
+
+    CSVParser(const CSVParser&) = delete;
+    CSVParser& operator=(const CSVParser&) = delete;
+    CSVParser(CSVParser&&) = delete;
+    CSVParser& operator=(CSVParser&&) = delete;
 
     bool load() override;
 
@@ -38,6 +44,9 @@ public:
     std::string_view valueView(size_t r, size_t c) const override;
     const std::string& value(size_t r, size_t c) const override;
 
+    // Fast type hint for UI / filters
+    CellKind cellKind(size_t r, size_t c) const override;
+
     std::optional<size_t> columnIndex(const std::string& name) const;
 
 private:
@@ -45,32 +54,35 @@ private:
         const char* data = nullptr;
         size_t size = 0;
         bool mmapped = false;
+
 #ifdef _WIN32
-        void* fileHandle = nullptr;
-        void* mapHandle = nullptr;
+        void* hFile = nullptr;
+        void* hMap = nullptr;
 #else
         int fd = -1;
 #endif
         std::vector<char> owned;
+
         void release();
         ~Buffer() { release(); }
     };
 
-    struct LineRange { size_t begin, end; };
-
+    void resetState();
     bool mapFile(Buffer& buf) const;
     bool readFileBuffered(Buffer& buf) const;
 
-    void buildLineRanges(const Buffer& buf, std::vector<LineRange>& lines) const;
-    void parallelSplitLines(const Buffer& buf, const std::vector<LineRange>& lines);
-
-    static void splitRowNoQuotes(std::string_view row, char delim,
+    // Parse one line [b,e) into spans (offset,len) relative to b
+    static void splitLineNoQuotes(std::string_view line, char delim,
         std::vector<std::pair<size_t, size_t>>& spans);
 
-    static void splitRowWithQuotes(std::string_view row, char delim,
+    static void splitLineQuotesFast(std::string_view line, char delim,
         std::vector<std::pair<size_t, size_t>>& spans);
 
-    inline size_t flatIndex(size_t r, size_t c) const { return r * cols_ + c; }
+    // AVX2: find next occurrence of delim or '\n' (returns index in [pos,n], n if none)
+    static size_t findNextDelimOrNL_AVX2(const char* s, size_t pos, size_t n, char delim);
+
+    static bool looksLikeNumber(std::string_view v);
+    static bool equalsIgnoreCase(std::string_view a, std::string_view b);
 
 private:
     std::string filename_;
@@ -79,8 +91,9 @@ private:
     size_t rows_ = 0;
     size_t cols_ = 0;
 
-    std::vector<std::string_view> cells_; // flat [row * col]
-    std::vector<std::string> colNames_;
+    std::vector<std::string_view> cells_; // flat [rows_ * cols_], stable grid
+
+    // header name -> index (sorted)
     std::vector<std::pair<std::string, size_t>> headerIndex_;
 
     std::unique_ptr<Buffer> backing_;

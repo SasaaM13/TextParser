@@ -42,7 +42,7 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v145</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
@@ -136,8 +136,11 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>C:\Users\Win\vcpkg\installed\x64-windows\include;C:\Users\Sasa\Desktop\MR\external;C:\vcpkg\installed\x64-windows\include</AdditionalIncludeDirectories>
+      <LanguageStandard>stdcpp23</LanguageStandard>
+     <AdditionalIncludeDirectories>
+C:\Users\Win\vcpkg\installed\x64-windows\include;
+%(AdditionalIncludeDirectories)
+</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -179,15 +182,6 @@
     </ItemDefinitionGroup>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="..\..\..\Users\Sasa\Desktop\MR\external\csv-parser\include\internal\basic_csv_parser.cpp" />
-    <ClCompile Include="..\..\..\Users\Sasa\Desktop\MR\external\csv-parser\include\internal\col_names.cpp" />
-    <ClCompile Include="..\..\..\Users\Sasa\Desktop\MR\external\csv-parser\include\internal\csv_format.cpp" />
-    <ClCompile Include="..\..\..\Users\Sasa\Desktop\MR\external\csv-parser\include\internal\csv_reader.cpp" />
-    <ClCompile Include="..\..\..\Users\Sasa\Desktop\MR\external\csv-parser\include\internal\csv_reader_iterator.cpp" />
-    <ClCompile Include="..\..\..\Users\Sasa\Desktop\MR\external\csv-parser\include\internal\csv_row.cpp" />
-    <ClCompile Include="..\..\..\Users\Sasa\Desktop\MR\external\csv-parser\include\internal\csv_row_json.cpp" />
-    <ClCompile Include="..\..\..\Users\Sasa\Desktop\MR\external\csv-parser\include\internal\csv_stat.cpp" />
-    <ClCompile Include="..\..\..\Users\Sasa\Desktop\MR\external\csv-parser\include\internal\csv_utility.cpp" />
     <ClCompile Include="CSVParser.cpp" />
     <ClCompile Include="JSONParser.cpp" />
     <ClCompile Include="TextFileParser.cpp" />
@@ -197,7 +191,6 @@
     <ClCompile Include="XMLParser.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="..\..\..\Users\Sasa\Desktop\MR\external\csv-parser\include\external\hedley.h" />
     <ClInclude Include="..\..\fast-cpp-csv-parser\csv.h" />
     <ClInclude Include="CSVParser.h" />
     <ClInclude Include="JSONParser.h" />

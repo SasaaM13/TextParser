@@ -1,321 +1,528 @@
 ﻿#include "JSONParser.h"
-#include <fstream>
-#include <sstream>
-#include <cctype>
-#include <filesystem>
-#include <thread>
-#include <future>
 #include <algorithm>
-#include <cstring>
 
-#ifdef _WIN32
-#include <windows.h>
-#else
-#include <sys/mman.h>
-#include <fcntl.h>
-#include <unistd.h>
-#endif
-
-#if defined(__AVX2__) || (defined(_MSC_VER) && defined(__AVX2__))
-#include <immintrin.h>
-#define JSONP_HAS_COMPILETIME_AVX2 1
-#else
-#define JSONP_HAS_COMPILETIME_AVX2 0
-#endif
-
-using namespace std;
-
-// ================================
-//   Pomocne funkcije
-// ================================
-void JSONParser::skip_ws(const std::string_view& s, size_t& i) {
-    while(i < s.size()) {
-        unsigned char c = (unsigned char)s[i];
-        if(c == ' ' || c == '\t' || c == '\n' || c == '\r') { ++i; continue; }
-        break;
-    }
-}
-static inline bool at_end(const std::string_view& s, size_t i) { return i >= s.size(); }
-
-std::string JSONParser::parse_string(const std::string_view& s, size_t& i) {
-    std::string out;
-    if(at_end(s, i) || s[i] != '"') return out;
-    ++i;
-    while(!at_end(s, i) && s[i] != '"') {
-        char c = s[i];
-        if(c == '\\') {
-            ++i;
-            if(at_end(s, i)) break;
-            char e = s[i];
-            switch(e) {
-            case 'n': out.push_back('\n'); break;
-            case 't': out.push_back('\t'); break;
-            case 'r': out.push_back('\r'); break;
-            case '"': out.push_back('"'); break;
-            case '\\':out.push_back('\\'); break;
-            default:  out.push_back(e); break;
-            }
-        }
-        else out.push_back(c);
-        ++i;
-    }
-    if(!at_end(s, i) && s[i] == '"') ++i;
-    return out;
+size_t JSONParser::skip_ws(std::string_view sv, size_t i) {
+    while(i < sv.size() && is_ws((unsigned char)sv[i])) ++i;
+    return i;
 }
 
-DataNode JSONParser::parse_value(const std::string_view& s, size_t& i,
-    const std::string& name, size_t level) {
-    skip_ws(s, i);
-    if(at_end(s, i)) return DataNode(name, "", level);
-
-    if(s[i] == '{') {
-        DataNode node(name, "", level);
-        ++i;
-        while(true) {
-            skip_ws(s, i);
-            if(at_end(s, i)) break;
-            if(s[i] == '}') { ++i; break; }
-            if(s[i] != '"') { ++i; continue; }
-            std::string key = parse_string(s, i);
-            skip_ws(s, i);
-            if(at_end(s, i) || s[i] != ':') { ++i; continue; }
-            ++i;
-            DataNode child = parse_value(s, i, key, level + 1);
-            node.children.push_back(std::move(child));
-            skip_ws(s, i);
-            if(at_end(s, i)) break;
-            if(s[i] == ',') { ++i; continue; }
-            if(s[i] == '}') { ++i; break; }
-        }
-        return node;
-    }
-
-    if(s[i] == '[') {
-        DataNode node(name, "", level);
-        ++i;
-        int idx = 0;
-        while(true) {
-            skip_ws(s, i);
-            if(at_end(s, i) || s[i] == ']') { if(!at_end(s, i)) ++i; break; }
-            DataNode child = parse_value(s, i, "elem" + std::to_string(idx++), level + 1);
-            node.children.push_back(std::move(child));
-            skip_ws(s, i);
-            if(at_end(s, i)) break;
-            if(s[i] == ',') { ++i; continue; }
-            if(s[i] == ']') { ++i; break; }
-        }
-        return node;
-    }
-
-    if(s[i] == '"') {
-        std::string val = parse_string(s, i);
-        return DataNode(name, val, level);
-    }
-
-    size_t start = i;
-    while(!at_end(s, i) && !isspace((unsigned char)s[i]) && s[i] != ',' && s[i] != ']' && s[i] != '}')
-        ++i;
-    std::string val(s.substr(start, i - start));
-    return DataNode(name, val, level);
-}
-
-// ================================
-//   Spori fallback (ifstream) — podržava [..], {...}, NDJSON
-// ================================
-bool JSONParser::load_slow() {
-    std::ifstream in(filename_, std::ios::binary);
-    if(!in.is_open()) return false;
-
-    std::string text((std::istreambuf_iterator<char>(in)), {});
+size_t JSONParser::skip_bom_and_ws(std::string_view sv) {
     size_t i = 0;
-
-    // --- preskoči UTF-8 BOM ---
-    if(text.size() >= 3 &&
-        (unsigned char)text[0] == 0xEF &&
-        (unsigned char)text[1] == 0xBB &&
-        (unsigned char)text[2] == 0xBF)
-    {
+    // UTF-8 BOM
+    if(sv.size() >= 3 &&
+        (unsigned char)sv[0] == 0xEF &&
+        (unsigned char)sv[1] == 0xBB &&
+        (unsigned char)sv[2] == 0xBF) {
         i = 3;
     }
+    return skip_ws(sv, i);
+}
 
-    skip_ws(text, i);
-    if(i >= text.size()) { root_ = DataNode("root", "", 0); notifyLoaded(); return true; }
-
-    data_.clear();
-    root_ = DataNode("root", "", 0);
-
-    // ===== 1. Flat array: [ {..}, {..} ] =====
-    if(text[i] == '[') {
-        ++i;
-        std::vector<std::string> keys;
-        while(true) {
-            skip_ws(text, i);
-            if(i >= text.size() || text[i] == ']') break;
-            if(text[i] != '{') { root_ = parse_value(text, i, "root", 0); notifyLoaded(); return true; }
-            ++i;
-            std::vector<std::string> currentKeys, values;
-            while(true) {
-                skip_ws(text, i);
-                if(i >= text.size()) break;
-                if(text[i] == '}') { ++i; break; }
-                if(text[i] != '"') { ++i; continue; }
-                std::string key = parse_string(text, i);
-                skip_ws(text, i);
-                if(i >= text.size() || text[i] != ':') { ++i; continue; }
-                ++i; skip_ws(text, i);
-                std::string val;
-                if(i < text.size() && text[i] == '"') val = parse_string(text, i);
-                else {
-                    size_t v0 = i;
-                    while(i < text.size() && text[i] != ',' && text[i] != '}') ++i;
-                    val = text.substr(v0, i - v0);
-                }
-                currentKeys.push_back(key);
-                values.push_back(val);
-                skip_ws(text, i);
-                if(i < text.size() && text[i] == ',') { ++i; continue; }
-                if(i < text.size() && text[i] == '}') { ++i; break; }
-            }
-            if(keys.empty()) { keys = currentKeys; colNames_ = keys; }
-            std::vector<std::string> row(keys.size());
-            for(size_t k = 0; k < currentKeys.size(); ++k)
-                for(size_t idx = 0; idx < keys.size(); ++idx)
-                    if(keys[idx] == currentKeys[k]) row[idx] = values[k];
-            data_.push_back(std::move(row));
-            skip_ws(text, i);
-            if(i >= text.size()) break;
-            if(text[i] == ',') { ++i; continue; }
-            if(text[i] == ']') { ++i; break; }
-        }
-        notifyLoaded();
-        return true;
-    }
-
-    // ===== 2. NDJSON / JSON Lines =====
-    if(text[i] == '{') {
-        std::ifstream in(filename_, std::ios::binary);
-        if(!in.is_open()) return false;
-
-        std::vector<std::string> keys;
-        std::string line;
-        line.reserve(4096); // prealloc
-
-        while(true) {
-            if(!std::getline(in, line)) break;
-            size_t j = 0;
-            skip_ws(line, j);
-            if(j >= line.size() || line[j] != '{') continue;
-
-            std::vector<std::string> currentKeys, values;
-            ++j;
-            while(j < line.size()) {
-                skip_ws(line, j);
-                if(j >= line.size() || line[j] == '}') { ++j; break; }
-                if(line[j] != '"') { ++j; continue; }
-
-                std::string key = parse_string(line, j);
-                skip_ws(line, j);
-                if(j >= line.size() || line[j] != ':') { ++j; continue; }
-                ++j; skip_ws(line, j);
-
-                std::string val;
-                if(j < line.size() && line[j] == '"') val = parse_string(line, j);
-                else {
-                    size_t v0 = j;
-                    while(j < line.size() && line[j] != ',' && line[j] != '}') ++j;
-                    val = line.substr(v0, j - v0);
-                }
-                currentKeys.push_back(std::move(key));
-                values.push_back(std::move(val));
-
-                skip_ws(line, j);
-                if(j < line.size() && line[j] == ',') { ++j; continue; }
-                if(j < line.size() && line[j] == '}') { ++j; break; }
-            }
-
-            if(keys.empty()) { keys = currentKeys; colNames_ = keys; }
-            std::vector<std::string> row(keys.size());
-            for(size_t k = 0; k < currentKeys.size(); ++k)
-                for(size_t idx = 0; idx < keys.size(); ++idx)
-                    if(keys[idx] == currentKeys[k])
-                        row[idx] = values[k];
-            data_.push_back(std::move(row));
-        }
-
-        notifyLoaded();
-        return true;
-    }
-
-    // ===== 3. Single object =====
-    root_ = parse_value(text, i, "root", 0);
-    notifyLoaded();
+bool JSONParser::expect_char(std::string_view sv, size_t& i, char ch) {
+    i = skip_ws(sv, i);
+    if(i >= sv.size() || sv[i] != ch) return false;
+    ++i;
     return true;
 }
 
-// ================================
-//   Fast loader (mmap) — detektuje [..], {..}, NDJSON
-// ================================
-bool JSONParser::load_fast() {
-    namespace fs = std::filesystem;
-    size_t fsize = fs::file_size(filename_);
-    if(fsize == 0) { root_ = DataNode("root", "", 0); notifyLoaded(); return true; }
+// Minimal string parser:
+// - out je view na ORIGINAL buffer (bez unescape) ako nema backslash
+// - ako ima escape, možemo (1) sporo materijalizovati ili (2) ostaviti raw.
+// Za speed: ovde radimo VIEW samo kada nema '\'. Ako ima, fallback na lenju materializaciju u value().
+bool JSONParser::parse_json_string_view(std::string_view sv, size_t& i, std::string_view& out) {
+    i = skip_ws(sv, i);
+    if(i >= sv.size() || sv[i] != '"') return false;
+    size_t start = ++i;
+    bool hasEscape = false;
 
-#ifdef _WIN32
-    HANDLE hFile = CreateFileA(filename_.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL,
-        OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
-    if(hFile == INVALID_HANDLE_VALUE) return false;
-    HANDLE hMap = CreateFileMappingA(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
-    if(!hMap) { CloseHandle(hFile); return false; }
-    const char* base = (const char*)MapViewOfFile(hMap, FILE_MAP_READ, 0, 0, 0);
-    if(!base) { CloseHandle(hMap); CloseHandle(hFile); return false; }
-    std::string_view sv(base, fsize);
-#else
-    int fd = open(filename_.c_str(), O_RDONLY);
-    if(fd < 0) return false;
-    void* mapped = mmap(nullptr, fsize, PROT_READ, MAP_PRIVATE, fd, 0);
-    if(mapped == MAP_FAILED) { close(fd); return false; }
-    const char* base = (const char*)mapped;
-    std::string_view sv(base, fsize);
-#endif
+    while(i < sv.size()) {
+        char c = sv[i];
+        if(c == '\\') { hasEscape = true; ++i; if(i < sv.size()) ++i; continue; }
+        if(c == '"') break;
+        ++i;
+    }
+    if(i >= sv.size() || sv[i] != '"') return false;
 
-    size_t p = 0;
-    skip_ws(sv, p);
+    size_t end = i;
+    ++i;
 
-    // preskoči UTF-8 BOM ako postoji
-    if(p + 3 < sv.size() &&
-        (unsigned char)sv[p] == 0xEF &&
-        (unsigned char)sv[p + 1] == 0xBB &&
-        (unsigned char)sv[p + 2] == 0xBF) {
-        p += 3;
-        skip_ws(sv, p);
+    if(!hasEscape) {
+        out = sv.substr(start, end - start);
+        return true;
     }
 
-    char start = (p < sv.size()) ? sv[p] : 0;
-
-    bool ok = false;
-    if(start == '[') ok = true;      // flat array
-    else if(start == '{') ok = true; // NDJSON or single-object
-
-#ifdef _WIN32
-    UnmapViewOfFile(base); CloseHandle(hMap); CloseHandle(hFile);
-#else
-    munmap((void*)base, fsize); close(fd);
-#endif
-
-    if(!ok) return load_slow();
-    // koristimo spori parser jer je mmap samo za peek ovde
-    return load_slow();
+    // escape present: store a sentinel view to the raw segment including quotes?
+    // Here we store the inside segment view anyway (raw). materialize() can unescape if you want later.
+    out = sv.substr(start, end - start);
+    return true;
 }
 
-// ================================
-//   load(): bira fast/slow
-// ================================
-bool JSONParser::load() {
+bool JSONParser::parse_json_value_view(std::string_view sv, size_t& i, std::string_view& out) {
+    i = skip_ws(sv, i);
+    if(i >= sv.size()) return false;
+
+    if(sv[i] == '"') {
+        return parse_json_string_view(sv, i, out);
+    }
+
+    // bare token: number, true, false, null
+    size_t start = i;
+    while(i < sv.size()) {
+        char c = sv[i];
+        if(is_ws((unsigned char)c) || c == ',' || c == '}' || c == ']') break;
+        ++i;
+    }
+    out = sv.substr(start, i - start);
+    return true;
+}
+
+JSONParser::Mode JSONParser::detectMode(std::string_view sv) const {
+    size_t i = skip_bom_and_ws(sv);
+    if(i >= sv.size()) return Mode::Unknown;
+    char c = sv[i];
+    if(c == '[') return Mode::FlatArray;
+    if(c == '{') {
+        // Heuristika NDJSON: ako ima '\n' pre nego što se zatvori prvi objekat, često je NDJSON (ali ne uvek).
+        // Brže: proveri da li posle prvog '}' ima '\n' i opet '{'.
+        size_t j = i;
+        int depth = 0;
+        bool inStr = false;
+        for(; j < sv.size(); ++j) {
+            char x = sv[j];
+            if(inStr) {
+                if(x == '\\') { ++j; continue; }
+                if(x == '"') inStr = false;
+                continue;
+            }
+            if(x == '"') { inStr = true; continue; }
+            if(x == '{') ++depth;
+            else if(x == '}') { --depth; if(depth == 0) { ++j; break; } }
+        }
+        // skip ws
+        j = skip_ws(sv, j);
+        if(j < sv.size() && sv[j] == '{') return Mode::NDJSON; // multiple objects back-to-back (common in ndjson without newline too)
+        // If next non-ws is something else, treat single object
+        return Mode::SingleObject;
+    }
+    return Mode::Unknown;
+}
+
+bool JSONParser::mapFile() {
     namespace fs = std::filesystem;
     if(!fs::exists(filename_)) return false;
-    if(!opt_.preferFastPath) return load_slow();
+    size_ = (size_t)fs::file_size(filename_);
+    if(size_ == 0) return true;
 
-    size_t fsize = fs::file_size(filename_);
-    if(fsize >= opt_.fastMinSize) return load_fast();
-    return load_slow();
+#ifdef _WIN32
+    hFile_ = CreateFileA(filename_.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if(hFile_ == INVALID_HANDLE_VALUE) return false;
+
+    hMap_ = CreateFileMappingA(hFile_, NULL, PAGE_READONLY, 0, 0, NULL);
+    if(!hMap_) return false;
+
+    base_ = (const char*)MapViewOfFile(hMap_, FILE_MAP_READ, 0, 0, 0);
+    if(!base_) return false;
+#else
+    fd_ = open(filename_.c_str(), O_RDONLY);
+    if(fd_ < 0) return false;
+    void* mapped = mmap(nullptr, size_, PROT_READ, MAP_PRIVATE, fd_, 0);
+    if(mapped == MAP_FAILED) return false;
+    base_ = (const char*)mapped;
+#endif
+    return true;
+}
+
+void JSONParser::unmapFile() {
+#ifdef _WIN32
+    if(base_) { UnmapViewOfFile(base_); base_ = nullptr; }
+    if(hMap_) { CloseHandle(hMap_); hMap_ = nullptr; }
+    if(hFile_ != INVALID_HANDLE_VALUE) { CloseHandle(hFile_); hFile_ = INVALID_HANDLE_VALUE; }
+#else
+    if(base_ && size_) { munmap((void*)base_, size_); base_ = nullptr; }
+    if(fd_ >= 0) { close(fd_); fd_ = -1; }
+#endif
+}
+
+bool JSONParser::load() {
+    // reset stanja
+    rows_ = cols_ = 0;
+    dataViews_.clear();
+    colNames_.clear();
+    root_ = DataNode("root", "", 0);
+
+    // VAŽNO: očisti stare cache-ove
+    cacheString_.clear();
+    cacheInt_.clear();
+    cacheDouble_.clear();
+    cacheBool_.clear();
+
+    if(!opt_.preferFastPath)
+        return parseSlowFallback();
+
+    namespace fs = std::filesystem;
+    if(!fs::exists(filename_))
+        return false;
+
+    // ===== FAST PATH =====
+    if(opt_.useMMap) {
+        // ❗ unmap starog fajla (ako load zoveš više puta)
+        unmapFile();
+
+        if(!mapFile())
+            return parseSlowFallback();
+
+        if(parseFast()) {
+            notifyLoaded();
+            return true;   // ❗ mmap OSTAJЕ ŽIV
+        }
+
+        // fallback → moraš unmap
+        unmapFile();
+        return parseSlowFallback();
+    }
+
+    return parseSlowFallback();
+}
+
+bool JSONParser::parseFast() {
+    if(size_ == 0) return true;
+    std::string_view sv(base_, size_);
+
+    Mode m = detectMode(sv);
+    switch(m) {
+    case Mode::FlatArray: return parseFlatArray(sv);
+    case Mode::NDJSON:    return parseNDJSON(sv);
+    case Mode::SingleObject:
+        // za tvoje merenje (objects/fields) to nije bitno, ali može
+        return parseSingleObjectToRoot(sv);
+    default:
+        return false;
+    }
+}
+
+// ======= array span extraction =======
+// Nalazi opseg svakog top-level objekta u [ ... ] bez parsiranja polja.
+// Radi skalarno, ali vrlo brzo (bez alokacija po karakteru).
+bool JSONParser::find_object_spans_in_array(std::string_view sv, size_t arrayBegin, size_t arrayEnd,
+    std::vector<ObjSpan>& out, bool /*parallelHint*/) {
+    out.clear();
+    size_t i = arrayBegin;
+    i = skip_ws(sv, i);
+    if(i >= arrayEnd || sv[i] != '[') return false;
+    ++i;
+
+    int depth = 0;
+    bool inStr = false;
+    size_t objStart = 0;
+    bool inObj = false;
+
+    for(; i < arrayEnd; ++i) {
+        char c = sv[i];
+        if(inStr) {
+            if(c == '\\') { ++i; continue; }
+            if(c == '"') inStr = false;
+            continue;
+        }
+        else {
+            if(c == '"') { inStr = true; continue; }
+            if(c == '{') {
+                if(!inObj) { inObj = true; objStart = i; }
+                ++depth;
+            }
+            else if(c == '}') {
+                --depth;
+                if(inObj && depth == 0) {
+                    out.push_back({ objStart, i + 1 });
+                    inObj = false;
+                }
+            }
+            else if(c == ']') {
+                break;
+            }
+        }
+    }
+    return !out.empty();
+}
+
+// Parse one object to rowOut (aligned to cols_)
+bool JSONParser::parseObjectRow(std::string_view obj,
+    std::vector<std::string_view>& keysTmp,
+    std::vector<std::string_view>& valsTmp,
+    std::vector<std::string_view>& rowOut) {
+    keysTmp.clear();
+    valsTmp.clear();
+
+    size_t i = 0;
+    if(!expect_char(obj, i, '{')) return false;
+
+    while(true) {
+        i = skip_ws(obj, i);
+        if(i >= obj.size()) return false;
+        if(obj[i] == '}') { ++i; break; }
+
+        std::string_view key;
+        if(!parse_json_string_view(obj, i, key)) return false;
+        if(!expect_char(obj, i, ':')) return false;
+
+        std::string_view val;
+        if(!parse_json_value_view(obj, i, val)) return false;
+
+        keysTmp.push_back(key);
+        valsTmp.push_back(val);
+
+        i = skip_ws(obj, i);
+        if(i < obj.size() && obj[i] == ',') { ++i; continue; }
+        if(i < obj.size() && obj[i] == '}') { ++i; break; }
+    }
+
+    // init rowOut with empties
+    rowOut.assign(cols_, std::string_view{});
+
+    // Map keys to columns (linear search is ok for 5 fields; if bigger, we can add hash)
+    for(size_t k = 0; k < keysTmp.size(); ++k) {
+        auto it = std::find_if(colNames_.begin(), colNames_.end(),
+            [&](const std::string& s) { return std::string_view(s) == keysTmp[k]; });
+        if(it == colNames_.end()) continue;
+        size_t col = (size_t)std::distance(colNames_.begin(), it);
+        rowOut[col] = valsTmp[k];
+    }
+    return true;
+}
+
+void JSONParser::buildColumnsFromFirstObject(const std::vector<std::string_view>& keysTmp) {
+    colNames_.clear();
+    colNames_.reserve(keysTmp.size());
+    for(auto k : keysTmp) colNames_.emplace_back(k); // one-time copy
+    cols_ = colNames_.size();
+}
+
+// ======= parse flat array =======
+bool JSONParser::parseFlatArray(std::string_view sv) {
+    size_t i0 = skip_bom_and_ws(sv);
+    if(i0 >= sv.size() || sv[i0] != '[') return false;
+
+    // find closing ']' quickly (we still need object spans)
+    size_t iEnd = sv.size();
+
+    std::vector<ObjSpan> spans;
+    if(!find_object_spans_in_array(sv, i0, iEnd, spans, opt_.parallel)) return false;
+
+    // parse first object to get columns
+    {
+        std::vector<std::string_view> keysTmp, valsTmp, rowTmp;
+        std::string_view obj = sv.substr(spans[0].begin, spans[0].end - spans[0].begin);
+
+        // temporary cols_ = number of keys from first object (after build)
+        // First parse just keys/vals without mapping
+        size_t j = 0;
+        if(!expect_char(obj, j, '{')) return false;
+        while(true) {
+            j = skip_ws(obj, j);
+            if(j >= obj.size()) return false;
+            if(obj[j] == '}') { ++j; break; }
+
+            std::string_view key;
+            if(!parse_json_string_view(obj, j, key)) return false;
+            if(!expect_char(obj, j, ':')) return false;
+            std::string_view val;
+            if(!parse_json_value_view(obj, j, val)) return false;
+
+            keysTmp.push_back(key);
+            valsTmp.push_back(val);
+
+            j = skip_ws(obj, j);
+            if(j < obj.size() && obj[j] == ',') { ++j; continue; }
+            if(j < obj.size() && obj[j] == '}') { ++j; break; }
+        }
+
+        if(keysTmp.size() > opt_.maxColumnsHint) return false;
+        buildColumnsFromFirstObject(keysTmp);
+    }
+
+    rows_ = spans.size();
+    dataViews_.assign(rows_ * cols_, std::string_view{});
+
+    // Prepare lazy caches sized for base key(r,c)
+    cacheString_.assign(rows_ * cols_, std::nullopt);
+    cacheInt_.assign(rows_ * cols_, std::nullopt);
+    cacheDouble_.assign(rows_ * cols_, std::nullopt);
+    cacheBool_.assign(rows_ * cols_, std::nullopt);
+
+    // parse each object into its row (parallel optional)
+    unsigned hw = opt_.threadHint ? opt_.threadHint : std::max<unsigned int>(1u, std::thread::hardware_concurrency());
+    bool usePar = opt_.parallel && rows_ >= 200 && hw >= 2; // heuristika
+
+    if(!usePar) {
+        std::vector<std::string_view> keysTmp, valsTmp, rowTmp;
+        for(size_t r = 0; r < rows_; ++r) {
+            std::string_view obj = sv.substr(spans[r].begin, spans[r].end - spans[r].begin);
+            if(!parseObjectRow(obj, keysTmp, valsTmp, rowTmp)) return false;
+            std::memcpy(&dataViews_[r * cols_], rowTmp.data(), cols_ * sizeof(std::string_view));
+        }
+        return true;
+    }
+
+    // parallel: split spans into chunks
+    size_t workers = std::min<size_t>(hw, 8); // cap
+    size_t chunk = (rows_ + workers - 1) / workers;
+
+    std::vector<std::future<bool>> fut;
+    fut.reserve(workers);
+
+    for(size_t w = 0; w < workers; ++w) {
+        size_t r0 = w * chunk;
+        size_t r1 = std::min<size_t>(rows_, r0 + chunk);
+        if(r0 >= r1) break;
+
+        fut.push_back(std::async(std::launch::async, [&, r0, r1]() -> bool {
+            std::vector<std::string_view> keysTmp, valsTmp, rowTmp;
+            for(size_t r = r0; r < r1; ++r) {
+                std::string_view obj = sv.substr(spans[r].begin, spans[r].end - spans[r].begin);
+                if(!parseObjectRow(obj, keysTmp, valsTmp, rowTmp)) return false;
+                std::memcpy(&dataViews_[r * cols_], rowTmp.data(), cols_ * sizeof(std::string_view));
+            }
+            return true;
+            }));
+    }
+
+    for(auto& f : fut) if(!f.get()) return false;
+    return true;
+}
+
+// ======= parse NDJSON =======
+bool JSONParser::parseNDJSON(std::string_view sv) {
+    size_t i = skip_bom_and_ws(sv);
+
+    // Split by lines (views) — ultra cheap
+    std::vector<ObjSpan> spans;
+    spans.reserve(1024);
+
+    size_t lineStart = i;
+    while(lineStart < sv.size()) {
+        size_t lineEnd = lineStart;
+        while(lineEnd < sv.size() && sv[lineEnd] != '\n') ++lineEnd;
+
+        // trim \r
+        size_t trimEnd = lineEnd;
+        if(trimEnd > lineStart && sv[trimEnd - 1] == '\r') --trimEnd;
+
+        // skip empty lines
+        size_t j = skip_ws(sv, lineStart);
+        if(j < trimEnd && sv[j] == '{') {
+            spans.push_back({ lineStart, trimEnd });
+        }
+
+        lineStart = (lineEnd < sv.size()) ? (lineEnd + 1) : sv.size();
+    }
+    if(spans.empty()) return false;
+
+    // parse first line to get columns
+    {
+        std::vector<std::string_view> keysTmp, valsTmp;
+        std::string_view obj = sv.substr(spans[0].begin, spans[0].end - spans[0].begin);
+
+        size_t j = 0;
+        if(!expect_char(obj, j, '{')) return false;
+        while(true) {
+            j = skip_ws(obj, j);
+            if(j >= obj.size()) return false;
+            if(obj[j] == '}') { ++j; break; }
+
+            std::string_view key, val;
+            if(!parse_json_string_view(obj, j, key)) return false;
+            if(!expect_char(obj, j, ':')) return false;
+            if(!parse_json_value_view(obj, j, val)) return false;
+
+            keysTmp.push_back(key);
+            valsTmp.push_back(val);
+
+            j = skip_ws(obj, j);
+            if(j < obj.size() && obj[j] == ',') { ++j; continue; }
+            if(j < obj.size() && obj[j] == '}') { ++j; break; }
+        }
+
+        if(keysTmp.size() > opt_.maxColumnsHint) return false;
+        buildColumnsFromFirstObject(keysTmp);
+    }
+
+    rows_ = spans.size();
+    dataViews_.assign(rows_ * cols_, std::string_view{});
+    cacheString_.assign(rows_ * cols_, std::nullopt);
+    cacheInt_.assign(rows_ * cols_, std::nullopt);
+    cacheDouble_.assign(rows_ * cols_, std::nullopt);
+    cacheBool_.assign(rows_ * cols_, std::nullopt);
+
+    unsigned hw = opt_.threadHint ? opt_.threadHint : std::max<unsigned int>(1u, std::thread::hardware_concurrency());
+    bool usePar = opt_.parallel && rows_ >= 500 && hw >= 2;
+
+    if(!usePar) {
+        std::vector<std::string_view> keysTmp, valsTmp, rowTmp;
+        for(size_t r = 0; r < rows_; ++r) {
+            std::string_view obj = sv.substr(spans[r].begin, spans[r].end - spans[r].begin);
+            if(!parseObjectRow(obj, keysTmp, valsTmp, rowTmp)) return false;
+            std::memcpy(&dataViews_[r * cols_], rowTmp.data(), cols_ * sizeof(std::string_view));
+        }
+        return true;
+    }
+
+    size_t workers = std::min<size_t>(hw, 8);
+    size_t chunk = (rows_ + workers - 1) / workers;
+
+    std::vector<std::future<bool>> fut;
+    fut.reserve(workers);
+
+    for(size_t w = 0; w < workers; ++w) {
+        size_t r0 = w * chunk;
+        size_t r1 = std::min<size_t>(rows_, r0 + chunk);
+        if(r0 >= r1) break;
+
+        fut.push_back(std::async(std::launch::async, [&, r0, r1]() -> bool {
+            std::vector<std::string_view> keysTmp, valsTmp, rowTmp;
+            for(size_t r = r0; r < r1; ++r) {
+                std::string_view obj = sv.substr(spans[r].begin, spans[r].end - spans[r].begin);
+                if(!parseObjectRow(obj, keysTmp, valsTmp, rowTmp)) return false;
+                std::memcpy(&dataViews_[r * cols_], rowTmp.data(), cols_ * sizeof(std::string_view));
+            }
+            return true;
+            }));
+    }
+
+    for(auto& f : fut) if(!f.get()) return false;
+    return true;
+}
+
+// Optional: single object -> root_ (nije fokus performance)
+bool JSONParser::parseSingleObjectToRoot(std::string_view sv) {
+    // Najbrže: preskoči i vrati prazno root_ ili napravi minimalno.
+    // Ako ti treba hijerarhija, onda pravimo pravi parser (ali to je drugi režim).
+    root_ = DataNode("root", "", 0);
+    return true;
+}
+
+bool JSONParser::parseSlowFallback() {
+    // Ako hoćeš: ubaci tvoj postojeći load_slow() kod ovde (kopiranje).
+    // Za sada: minimalno
+    return false;
+}
+
+const std::string& JSONParser::materialize(size_t r, size_t c) const {
+    size_t k = key(r, c);
+
+    { // quick check without lock (benign data race avoided by always locking for write)
+      // can't read optional safely without lock in general; keep it simple:
+    }
+
+    std::lock_guard<std::mutex> lk(cacheMutex_);
+    if(k >= cacheString_.size()) return empty_;
+    if(cacheString_[k].has_value()) return *cacheString_[k];
+
+    auto v = valueView(r, c);
+    cacheString_[k] = std::string(v); // NOTE: za escaped string možeš ovde da dodaš unescape
+    return *cacheString_[k];
+}
+
+const std::string& JSONParser::value(size_t r, size_t c) const {
+    if(r >= rows_ || c >= cols_) return empty_;
+    return materialize(r, c);
 }

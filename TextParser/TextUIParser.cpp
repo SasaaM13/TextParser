@@ -25,12 +25,12 @@
 #include <nlohmann/json.hpp>
 #include <tinyxml2.h>
 #include <pugixml.hpp>
-#include "csv-parser/include/csv.hpp"
+#include <vincentlaucsb-csv-parser/csv.hpp>
 #include <rapidcsv.h>
 #include <OpenXLSX/OpenXLSX.hpp>
 #include <xlnt/xlnt.hpp>
 #include <Richedit.h>
-
+#define TEST 1
 using namespace std;
 
 // ---------------- UI globals ----------------
@@ -50,35 +50,48 @@ static std::string GetLowerExt(const std::string& path) {
 // =======================================================
 // JSON helpers
 // =======================================================
-static bool RapidJSON_Count(const std::string& path, size_t& rows, size_t& cols, std::string* err = nullptr)
+static bool RapidJSON_Count(
+    const std::string& path,
+    size_t& rows,
+    size_t& cols,
+    std::string* err = nullptr)
 {
     using namespace rapidjson;
-    std::ifstream ifs(path, std::ios::binary);
-    if(!ifs) { if(err) *err = "Cannot open file"; return false; }
-    IStreamWrapper isw(ifs);
-    rapidjson::Document d;
-    d.ParseStream(isw);
-    if(d.HasParseError()) {
-        if(err) *err = GetParseError_En(d.GetParseError());
+
+    std::ifstream ifs(path);
+    if(!ifs) {
+        if(err) *err = "Cannot open file";
         return false;
     }
 
-    rows = cols = 0;
-    const Value* arr = nullptr;
-    if(d.IsArray()) arr = &d;
-    else if(d.IsObject()) {
-        for(auto it = d.MemberBegin(); it != d.MemberEnd(); ++it)
-            if(it->value.IsArray()) { arr = &it->value; break; }
-        if(!arr) { rows = 1; cols = (size_t)d.MemberCount(); return true; }
-    }
-    if(!arr) return false;
+    rows = 0;
+    cols = 0;
 
-    rows = arr->Size();
-    for(auto& v : arr->GetArray()) {
-        if(v.IsArray()) cols = max(cols, (size_t)v.Size());
-        else if(v.IsObject()) cols = max(cols, (size_t)v.MemberCount());
-        else cols = max(cols, (size_t)1);
+    std::string line;
+    while(std::getline(ifs, line)) {
+        if(line.empty()) continue;
+
+        Document d;
+        d.Parse(line.c_str());
+
+        if(d.HasParseError()) {
+            if(err) *err = GetParseError_En(d.GetParseError());
+            return false;
+        }
+
+        if(d.IsObject()) {
+            cols = std::max(cols, (size_t)d.MemberCount());
+        }
+        else if(d.IsArray()) {
+            cols = std::max(cols, (size_t)d.Size());
+        }
+        else {
+            cols = std::max(cols, (size_t)1);
+        }
+
+        ++rows;
     }
+
     return true;
 }
 
@@ -680,8 +693,8 @@ void TextParserUI::ParseFile(const std::string& filepath)
             CSVParser::Options opt;
             opt.delimiter = ',';
             opt.hasHeader = true;
-            opt.maxRows = -1;
-            opt.maxCols = -1;
+            opt.allowQuotes = false; 
+            opt.useMMap = true;
 
             CSVParser csv(filepath, opt);
             bool ok = csv.load();
@@ -701,7 +714,18 @@ void TextParserUI::ParseFile(const std::string& filepath)
         lines.push_back(RunOne("Custom JSON", [&](size_t& r, size_t& c, std::string& e) {
             JSONParser j(filepath);
             bool ok = j.load();
-            if(ok) { r = j.rowCount(); c = j.colCount(); }
+            if(ok) 
+            { 
+#if TEST
+                auto s = j.valueView(0,0);
+                auto e = j.valueView(1,0);
+                auto ee = j.valueView(1, 1);
+                auto eee = j.valueView(4, 1);
+                auto i = j.value(6,7);
+                auto a = 1;
+#endif
+                r = j.rowCount(); c = j.colCount(); 
+            }
             return ok;
             }));
         lines.push_back(RunOne("RapidJSON", [&](size_t& r, size_t& c, std::string& e) {
@@ -731,7 +755,8 @@ void TextParserUI::ParseFile(const std::string& filepath)
             bool ok = x.load();
             if(ok) { 
                 r = x.rowCount(); c = x.colCount(); 
-                auto kind = x.cellKind(1, 1);
+                auto kind = x.cellKind(5, 0);
+                auto a=0;
             }
             return ok;
             }));
