@@ -31,7 +31,7 @@ public:
         NONE = 0,
         TRUE_FALSE = 1 << 0,  // "true"/"false"
         YES_NO = 1 << 1,      // "yes"/"no"
-        ONE_ZERO = 1 << 2     // "1"/"0"
+       // ONE_ZERO = 1 << 2     // "1"/"0"
     };
 
     enum CellKind : uint8_t {
@@ -86,8 +86,8 @@ public:
     std::optional<bool>   toBool(size_t row, size_t col,
         BoolFormat fmt = static_cast<BoolFormat>(
             static_cast<uint8_t>(BoolFormat::TRUE_FALSE) |
-            static_cast<uint8_t>(BoolFormat::YES_NO) |
-            static_cast<uint8_t>(BoolFormat::ONE_ZERO)));
+            static_cast<uint8_t>(BoolFormat::YES_NO)));
+           // static_cast<uint8_t>(BoolFormat::ONE_ZERO)));
 
 protected:
     void notifyLoaded();

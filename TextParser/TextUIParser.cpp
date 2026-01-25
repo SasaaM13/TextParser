@@ -698,7 +698,25 @@ void TextParserUI::ParseFile(const std::string& filepath)
 
             CSVParser csv(filepath, opt);
             bool ok = csv.load();
-            if(ok) { r = csv.rowCount(); c = csv.colCount(); }
+            if(ok) 
+            { 
+#ifdef TEST
+                auto cols = csv.getColNames();
+                auto col1 = csv.getColName(0);
+                auto valf  = csv.valueView(0,0);
+                auto kind = csv.cellKind(0,0);
+                auto val = csv.valueView(0,1);
+                auto val2 = csv.valueView(1,2);
+                auto t = csv.toDouble(1,1);
+                auto b1 = csv.cellKind(1, 2);
+                auto b2 = csv.cellKind(1,3);
+                auto i1 = csv.toInt(2,0);
+                auto valb = csv.valueView(2,4);
+                auto bb = csv.toBool(2,4, TextFileParser::BoolFormat::TRUE_FALSE);
+                auto kind2 = csv.cellKind(3,2);
+#endif
+                r = csv.rowCount(); c = csv.colCount(); 
+            }
             return ok;
             }));
 
@@ -739,7 +757,13 @@ void TextParserUI::ParseFile(const std::string& filepath)
         lines.push_back(RunOne("Custom XML", [&](size_t& r, size_t& c, std::string& e) {
             XMLParser x(filepath);
             bool ok = x.load();
-            if(ok) { r = x.elementCount(); c = x.textNodeCount(); }
+            if(ok) { r = x.elementCount(); c = x.textNodeCount(); 
+#if TEST
+            auto s = x.valueView(1, 1);
+            int k = 0;
+#endif
+
+            }
             return ok;
             }));
         lines.push_back(RunOne("tinyxml2", [&](size_t& r, size_t& c, std::string& e) {
@@ -774,6 +798,7 @@ void TextParserUI::ParseFile(const std::string& filepath)
 
     if(ext == "xml")
     {
+#if 0
         int n = 5000;
         RE_AppendLine(hEditOutput, RGB(100, 100, 100), true,
             "\n🔎 Extracting first nth XML elements...\n");
@@ -781,6 +806,7 @@ void TextParserUI::ParseFile(const std::string& filepath)
         PrintFirst50_CustomXML(filepath,n);
         PrintFirst50_Tiny(filepath,n);
         PrintFirst50_Pugi(filepath,n);
+#endif
     }
 
     // Print individual results

@@ -61,10 +61,10 @@ bool TextFileParser::parseBool(std::string_view s, bool& out, BoolFormat fmt)
         if(lower == "yes") { out = true;  return true; }
         if(lower == "no") { out = false; return true; }
     }
-    if(f & static_cast<uint8_t>(BoolFormat::ONE_ZERO)) {
+    /*if(f & static_cast<uint8_t>(BoolFormat::ONE_ZERO)) {
         if(s == "1") { out = true;  return true; }
         if(s == "0") { out = false; return true; }
-    }
+    }*/
     return false;
 }
 

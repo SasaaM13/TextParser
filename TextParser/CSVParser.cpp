@@ -5,6 +5,7 @@
 #include <cstring>
 #include <cassert>
 #include <filesystem>
+
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -21,6 +22,27 @@
 #define CSV_HAS_AVX2 0
 #endif
 
+// ============================================================
+// ULTRA-FAST CLEANUP (constant time):
+// removes trailing '\r' and up to two trailing ';'
+// so "TRUE;;\r" becomes "TRUE"
+// ============================================================
+static inline uint32_t trimCRandSemisLen(const char* base, uint32_t off, uint32_t len)
+{
+    if(len == 0) return 0;
+
+    uint32_t n = len;
+
+    // remove \r
+    if(n && base[off + n - 1] == '\r') --n;
+
+    // remove up to two ';'
+    if(n && base[off + n - 1] == ';') --n;
+    if(n && base[off + n - 1] == ';') --n;
+
+    return n;
+}
+
 // ==============================
 // ctor / reset
 // ==============================
@@ -31,15 +53,10 @@ CSVParser::CSVParser(std::string filename, Options opts)
 void CSVParser::resetState() {
     rows_ = cols_ = 0;
     cells_.clear();
-    colNames_.clear();
     headerIndex_.clear();
-    root_ = DataNode("csv", filename_, 0);
+    backing_.reset();
 
-    // IMPORTANT: do NOT pre-size per-cell caches here (too slow).
     cacheString_.clear();
-    cacheInt_.clear();
-    cacheDouble_.clear();
-    cacheBool_.clear();
 }
 
 // ==============================
@@ -155,7 +172,7 @@ void CSVParser::splitLineQuotesFast(std::string_view line, char delim,
 
     for(size_t i = 0; i < n; ++i) {
         char c = p[i];
-        if(c == '"') inq = !inq;          // FAST toggle (not RFC)
+        if(c == '"') inq = !inq;
         else if(c == delim && !inq) {
             spans.emplace_back(start, i - start);
             start = i + 1;
@@ -189,14 +206,12 @@ size_t CSVParser::findNextDelimOrNL_AVX2(const char* s, size_t pos, size_t n, ch
             return i + (size_t)idx;
         }
     }
-    // tail
     for(; i < n; ++i) {
         char c = s[i];
         if(c == delim || c == '\n') return i;
     }
     return n;
 #else
-    // scalar fallback
     for(size_t i = pos; i < n; ++i) {
         char c = s[i];
         if(c == delim || c == '\n') return i;
@@ -221,7 +236,6 @@ bool CSVParser::equalsIgnoreCase(std::string_view a, std::string_view b) {
 }
 
 bool CSVParser::looksLikeNumber(std::string_view v) {
-    // very fast heuristic: optional sign, digits, optional dot+digits, optional exp
     if(v.empty()) return false;
 
     size_t i = 0;
@@ -259,7 +273,7 @@ bool CSVParser::looksLikeNumber(std::string_view v) {
 }
 
 // ==============================
-// load(): fast + stable (rows/cols) + zero-copy
+// load(): FAST 2-PASS + offsets/len
 // ==============================
 bool CSVParser::load() {
     resetState();
@@ -271,6 +285,7 @@ bool CSVParser::load() {
 
     const char* s = backing_->data;
     const size_t n = backing_->size;
+
     if(!s || n == 0) {
         notifyLoaded();
         return true;
@@ -279,19 +294,15 @@ bool CSVParser::load() {
     // ---- find first line [0..firstEnd)
     size_t firstEnd = 0;
     while(firstEnd < n && s[firstEnd] != '\n') ++firstEnd;
+
     size_t firstLineEnd = firstEnd;
     if(firstLineEnd > 0 && s[firstLineEnd - 1] == '\r') --firstLineEnd;
     std::string_view firstLine(s, firstLineEnd);
 
-    // ---- decide quote mode for speed
+    // ---- decide quote mode
     bool useQuotes = opts_.allowQuotes;
-    if(useQuotes) {
-        // if first line has no quotes and you know your data has none, you can disable globally.
-        // We'll keep it enabled only if we actually see quotes in first line; this helps a lot.
-        // (If later lines have quotes and first doesn't, this may mis-parse; enable allowQuotes=true to force.)
-        if(firstLine.find('"') == std::string_view::npos) {
-            useQuotes = false;
-        }
+    if(useQuotes && firstLine.find('"') == std::string_view::npos) {
+        useQuotes = false;
     }
 
     // ---- parse header/cols from first line
@@ -308,213 +319,195 @@ bool CSVParser::load() {
     }
 
     if(opts_.hasHeader) {
+        colNames_.clear();
         colNames_.resize(cols_);
         headerIndex_.clear();
         headerIndex_.reserve(cols_);
+
         for(size_t c = 0; c < cols_; ++c) {
-            colNames_[c] = std::string(firstLine.substr(spans[c].first, spans[c].second));
-            headerIndex_.emplace_back(colNames_[c], c);
+            std::string name(firstLine.substr(spans[c].first, spans[c].second));
+            colNames_[c] = name;
+            headerIndex_.emplace_back(std::move(name), c);
         }
+
         std::sort(headerIndex_.begin(), headerIndex_.end(),
             [](const auto& a, const auto& b) { return a.first < b.first; });
     }
     else {
+        colNames_.clear();
         colNames_.resize(cols_);
-        for(size_t c = 0; c < cols_; ++c) colNames_[c] = "col" + std::to_string(c + 1);
+        for(size_t c = 0; c < cols_; ++c)
+            colNames_[c] = "col" + std::to_string(c + 1);
     }
 
-    // ---- start parsing data after first newline if header; otherwise include first line as data
-    size_t pos = 0;
+
+    // ---- start parsing data after first newline if header
+    size_t dataPos = 0;
     if(opts_.hasHeader) {
-        pos = (firstEnd < n && s[firstEnd] == '\n') ? (firstEnd + 1) : n;
+        dataPos = (firstEnd < n && s[firstEnd] == '\n') ? (firstEnd + 1) : n;
     }
     else {
-        pos = 0;
+        dataPos = 0;
     }
 
-    // ---- reserve (cheap heuristic, no extra pass)
-    // Typical: average cell maybe 8-16 bytes; we can reserve in chunks.
-    // Reserve at least few thousand cells.
-    size_t approxCells = std::max<size_t>(4096, (n / 12));
-    cells_.reserve(approxCells);
+    // ============================================================
+    // PASS 1: count rows fast
+    // ============================================================
+    size_t rowCount = 0;
+    if(dataPos < n) {
+        for(size_t i = dataPos; i < n; ++i) {
+            if(s[i] == '\n') ++rowCount;
+        }
+        if(n > dataPos && s[n - 1] != '\n') ++rowCount;
+    }
 
-    // ---- one-pass parse of data with fixed cols_
-    // We will fill exactly cols_ cells per row (pad missing, ignore extra).
-    size_t rowCellCount = 0;
-    size_t rowStartCellIndex = 0;
+    rows_ = rowCount;
 
-    auto padRowIfNeeded = [&]() {
-        if(!opts_.padMissingCells) return;
-        if(rowCellCount < cols_) {
-            size_t missing = cols_ - rowCellCount;
-            for(size_t k = 0; k < missing; ++k) cells_.emplace_back(std::string_view{});
-            rowCellCount = cols_;
+    // allocate exact
+    const size_t totalCells = rows_ * cols_;
+    cells_.clear();
+    cells_.resize(totalCells);
+
+    // ============================================================
+    // PASS 2: fill spans
+    // ============================================================
+    size_t r = 0;
+    size_t c = 0;
+
+    size_t cellStart = dataPos;
+    bool inQuotes2 = false;
+
+    auto setCell = [&](uint32_t off, uint32_t len, bool trimLastCol) {
+        if(r >= rows_) return;
+        if(c >= cols_) { ++c; return; } // ignore extra
+
+        if(trimLastCol && opts_.trimLastColumnCRSemis) {
+            len = trimCRandSemisLen(s, off, len);
+        }
+
+        cells_[r * cols_ + c] = CellSpan{ off, len };
+        ++c;
+        };
+
+    auto padRow = [&]() {
+        while(c < cols_) {
+            cells_[r * cols_ + c] = CellSpan{ 0u, 0u };
+            ++c;
         }
         };
 
-    // parsing loop
-    size_t cellStart = pos;
-    bool inQuotes = false;
-
-    auto commitCell = [&](size_t cellEnd, std::string_view rowBase) {
-        if(rowCellCount < cols_) {
-            cells_.emplace_back(rowBase.data() + (cellStart - (size_t)(rowBase.data() - s)),
-                cellEnd - cellStart);
-        }
-        // else ignore extras
-        ++rowCellCount;
+    auto finishRow = [&]() {
+        padRow();
+        ++r;
+        c = 0;
         };
 
-    // We need rowBase as a view into [rowBegin,rowEnd) for substring creation.
-    // For max speed, we compute spans using pointers, not substr on row view.
-    size_t rowBegin = pos;
-
-    auto finishRow = [&](size_t rowEnd) {
-        // Trim CR
-        size_t trimmedEnd = rowEnd;
-        if(trimmedEnd > rowBegin && s[trimmedEnd - 1] == '\r') --trimmedEnd;
-
-        // Commit last cell in this row if we haven't already overflown columns
-        size_t cellEnd = trimmedEnd;
-        if(rowCellCount < cols_) {
-            cells_.emplace_back(s + cellStart, cellEnd - cellStart);
-        }
-        ++rowCellCount;
-
-        // If we have less than cols_, pad empty
-        if(opts_.padMissingCells) {
-            if(rowCellCount < cols_) {
-                size_t missing = cols_ - rowCellCount;
-                for(size_t k = 0; k < missing; ++k) cells_.emplace_back(std::string_view{});
-                rowCellCount = cols_;
-            }
-        }
-        else {
-            // If not padding and row has fewer, UI grid won't be stable; we still keep stable layout:
-            // pad anyway to preserve r*cols indexing.
-            if(rowCellCount < cols_) {
-                size_t missing = cols_ - rowCellCount;
-                for(size_t k = 0; k < missing; ++k) cells_.emplace_back(std::string_view{});
-                rowCellCount = cols_;
-            }
-        }
-
-        // If row had more than cols_, we ignored extras; but we must also ensure we wrote exactly cols_ cells.
-        // With ignore-extras, we might have written cols_ then stopped adding; but rowCellCount still increments.
-        // Normalize rowCellCount to cols_ for stable math.
-        rowCellCount = cols_;
-
-        ++rows_;
-        rowCellCount = 0;
-        rowStartCellIndex = cells_.size();
-        };
-
-    // If no-quotes, use AVX2 jump-to-next-special for speed.
     if(!useQuotes) {
-        while(pos < n) {
+        size_t pos = dataPos;
+
+        while(pos < n && r < rows_) {
             size_t next = findNextDelimOrNL_AVX2(s, pos, n, opts_.delimiter);
             if(next >= n) break;
 
-            char c = s[next];
-            if(c == opts_.delimiter) {
-                if(rowCellCount < cols_) cells_.emplace_back(s + cellStart, next - cellStart);
-                ++rowCellCount;
+            char ch = s[next];
+
+            if(ch == opts_.delimiter) {
+                // normal cell, no trim
+                uint32_t off = (uint32_t)cellStart;
+                uint32_t len = (uint32_t)(next - cellStart);
+                setCell(off, len, false);
+
                 cellStart = next + 1;
                 pos = next + 1;
                 continue;
             }
 
-            // newline
-            if(c == '\n') {
-                // last cell ends at next (exclusive), with CR trim handled in finishRow
-                // commit last cell:
-                if(rowCellCount < cols_) cells_.emplace_back(s + cellStart, next - cellStart);
-                ++rowCellCount;
+            if(ch == '\n') {
+                // last cell in row: trim only if last column
+                uint32_t off = (uint32_t)cellStart;
+                uint32_t len = (uint32_t)(next - cellStart);
 
-                // pad/normalize row
-                if(rowCellCount < cols_) {
-                    size_t missing = cols_ - rowCellCount;
-                    for(size_t k = 0; k < missing; ++k) cells_.emplace_back(std::string_view{});
-                }
-                // ignore extras already handled by not pushing beyond cols_
-                rows_++;
-                rowCellCount = 0;
+                bool lastCol = (c == cols_ - 1);
+                setCell(off, len, lastCol);
 
-                // next row
+                finishRow();
+
+                cellStart = next + 1;
                 pos = next + 1;
-                rowBegin = pos;
-                cellStart = pos;
                 continue;
             }
 
             pos = next + 1;
         }
 
-        // last line (no trailing \n)
-        if(cellStart < n) {
-            // commit last cell
-            if(rowCellCount < cols_) cells_.emplace_back(s + cellStart, n - cellStart);
-            ++rowCellCount;
-            if(rowCellCount < cols_) {
-                size_t missing = cols_ - rowCellCount;
-                for(size_t k = 0; k < missing; ++k) cells_.emplace_back(std::string_view{});
-            }
-            if(rowCellCount > 0) rows_++;
+        // last line without \n
+        if(r < rows_ && cellStart < n) {
+            size_t end = n;
+            if(end > cellStart && s[end - 1] == '\r') --end;
+
+            uint32_t off = (uint32_t)cellStart;
+            uint32_t len = (uint32_t)(end - cellStart);
+
+            bool lastCol = (c == cols_ - 1);
+            setCell(off, len, lastCol);
+
+            finishRow();
         }
     }
     else {
-        // quotes mode (scalar, fast toggle)
-        for(pos = cellStart; pos < n; ++pos) {
+        // quotes mode scalar
+        for(size_t pos = dataPos; pos < n && r < rows_; ++pos) {
             char ch = s[pos];
+
             if(opts_.allowQuotes && ch == '"') {
-                inQuotes = !inQuotes;
+                inQuotes2 = !inQuotes2;
                 continue;
             }
 
-            if(!inQuotes && ch == opts_.delimiter) {
-                if(rowCellCount < cols_) cells_.emplace_back(s + cellStart, pos - cellStart);
-                ++rowCellCount;
+            if(!inQuotes2 && ch == opts_.delimiter) {
+                uint32_t off = (uint32_t)cellStart;
+                uint32_t len = (uint32_t)(pos - cellStart);
+                setCell(off, len, false);
+
                 cellStart = pos + 1;
                 continue;
             }
 
-            if(!inQuotes && ch == '\n') {
-                size_t end = pos;
-                if(end > rowBegin && s[end - 1] == '\r') --end;
+            if(!inQuotes2 && ch == '\n') {
+                size_t endPos = pos;
+                if(endPos > cellStart && s[endPos - 1] == '\r') --endPos;
 
-                if(rowCellCount < cols_) cells_.emplace_back(s + cellStart, end - cellStart);
-                ++rowCellCount;
+                uint32_t off = (uint32_t)cellStart;
+                uint32_t len = (uint32_t)(endPos - cellStart);
 
-                if(rowCellCount < cols_) {
-                    size_t missing = cols_ - rowCellCount;
-                    for(size_t k = 0; k < missing; ++k) cells_.emplace_back(std::string_view{});
-                }
+                bool lastCol = (c == cols_ - 1);
+                setCell(off, len, lastCol);
 
-                rows_++;
-                rowCellCount = 0;
-                rowBegin = pos + 1;
+                finishRow();
+
                 cellStart = pos + 1;
                 continue;
             }
         }
 
-        // last line
-        if(cellStart < n) {
-            if(rowCellCount < cols_) cells_.emplace_back(s + cellStart, n - cellStart);
-            ++rowCellCount;
-            if(rowCellCount < cols_) {
-                size_t missing = cols_ - rowCellCount;
-                for(size_t k = 0; k < missing; ++k) cells_.emplace_back(std::string_view{});
-            }
-            if(rowCellCount > 0) rows_++;
+        // last line without \n
+        if(r < rows_ && cellStart < n) {
+            size_t end = n;
+            if(end > cellStart && s[end - 1] == '\r') --end;
+
+            uint32_t off = (uint32_t)cellStart;
+            uint32_t len = (uint32_t)(end - cellStart);
+
+            bool lastCol = (c == cols_ - 1);
+            setCell(off, len, lastCol);
+
+            finishRow();
         }
     }
 
-    // If no header, include first row we parsed earlier (since pos=0). If header, we skipped it.
-    // In non-header case we parsed from pos=0 and included header row as data; OK.
-    // In header case we started after first line; OK.
+    // clamp if needed
+    if(r < rows_) rows_ = r;
 
-    root_ = DataNode("csv", filename_, 0);
     notifyLoaded();
     return true;
 }
@@ -524,12 +517,19 @@ bool CSVParser::load() {
 // ==============================
 std::string_view CSVParser::valueView(size_t r, size_t c) const {
     if(r >= rows_ || c >= cols_) return {};
+
     size_t idx = r * cols_ + c;
     if(idx >= cells_.size()) return {};
-    return cells_[idx];
+
+    const CellSpan sp = cells_[idx];
+    if(sp.len == 0) return {};
+
+    const char* base = backing_ ? backing_->data : nullptr;
+    if(!base) return {};
+
+    return std::string_view(base + sp.off, sp.len);
 }
 
-// Lazy string materialization (only if needed)
 const std::string& CSVParser::value(size_t r, size_t c) const {
     static const std::string empty;
     if(r >= rows_ || c >= cols_) return empty;
@@ -538,7 +538,6 @@ const std::string& CSVParser::value(size_t r, size_t c) const {
 
     std::scoped_lock lk(cacheMutex_);
 
-    // LAZY allocate only when needed (this is what you wanted)
     if(cacheString_.empty()) {
         cacheString_.resize(rows_ * cols_);
     }
@@ -555,16 +554,12 @@ TextFileParser::CellKind CSVParser::cellKind(size_t r, size_t c) const {
     auto v = valueView(r, c);
     if(v.empty()) return CK_Empty;
 
-    // null-ish
     if(equalsIgnoreCase(v, "null") || equalsIgnoreCase(v, "nan")) return CK_Empty;
 
-    // bool-ish
     if(equalsIgnoreCase(v, "true") || equalsIgnoreCase(v, "false") ||
-        equalsIgnoreCase(v, "yes") || equalsIgnoreCase(v, "no") ||
-        v == "0" || v == "1")
+        equalsIgnoreCase(v, "yes") || equalsIgnoreCase(v, "no"))
         return CK_Bool;
 
-    // number-ish
     if(looksLikeNumber(v)) return CK_Number;
 
     return CK_String;
