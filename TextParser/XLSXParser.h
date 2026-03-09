@@ -26,7 +26,10 @@ public:
     const std::string& value(size_t r, size_t c) const override;
 
     const DataNode& root() const override { return root_; }
+
+    // CSV-like heuristic (fast, stable)
     CellKind cellKind(size_t row, size_t col) const override;
+
 private:
     struct SheetInfo {
         std::string name;
@@ -54,7 +57,12 @@ private:
     void parseWorkbook(const std::string& xml);
     void parseSharedStrings(const std::string& xml);
     void parseSheetUltraFast(const std::string& xml);
-  
+
+    // ================= CellKind helpers (same as CSV idea) =================
+    static bool equalsIgnoreCase(std::string_view a, std::string_view b);
+    static bool looksLikeNumber(std::string_view v);
+
+private:
     // ================= state =================
     std::string filename_;
     std::vector<SheetInfo> sheets_;
@@ -64,8 +72,8 @@ private:
     struct CellRef {
         uint32_t off = 0;       // offset into sheetXML_
         uint32_t len = 0;       // length
-        uint32_t sst = 0;       // sharedStrings index if kind==1
-        uint8_t  kind = 0;      // 0=inline number/text in <v>, 1=sharedString index
+        uint32_t sst = 0;       // sharedStrings index if kind==CK_String and shared string
+        uint8_t  kind = 0;      // stores CK_* enum value (but we don't trust it for cellKind)
     };
 
     size_t rows_ = 0;
@@ -74,7 +82,6 @@ private:
     std::string sheetXML_;              // backing for all inline cell views (valid after load())
     std::vector<CellRef> cells_;        // flat [rows_ * cols_]
     std::vector<std::string> sharedStrings_;
-    std::vector<CellKind> kinds_; // flat, rows * cols
 
     // ===== fast char helpers =====
     static inline bool isalpha_fast(char c) {

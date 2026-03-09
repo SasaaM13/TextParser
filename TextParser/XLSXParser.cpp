@@ -29,8 +29,8 @@
 
 // ZIP konstante
 static const unsigned EOCD_SIG = 0x06054b50U;
-static const unsigned CEN_SIG  = 0x02014b50U;
-static const unsigned LOC_SIG  = 0x04034b50U;
+static const unsigned CEN_SIG = 0x02014b50U;
+static const unsigned LOC_SIG = 0x04034b50U;
 
 // === substring finder: mali tokeni, AVX2 ubrzanje za 2/3/4 ===
 static inline const char* memmem_small(const char* hay, const char* hayEnd,
@@ -135,13 +135,13 @@ bool XLSXParser::mapZip(MappedFile& mf) const {
     mf.base = view;
     mf.size = (size_t)sz.QuadPart;
     mf.hFile = hFile;
-    mf.hMap  = hMap;
+    mf.hMap = hMap;
     return true;
 #else
     int fd = ::open(filename_.c_str(), O_RDONLY);
     if(fd < 0) return false;
 
-    struct stat sb{};
+    struct stat sb {};
     if(fstat(fd, &sb) < 0 || sb.st_size <= 0) { ::close(fd); return false; }
 
     void* mem = mmap(nullptr, (size_t)sb.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
@@ -160,8 +160,8 @@ bool XLSXParser::extractEntry(const MappedFile& mf, const std::string& innerPath
 
     // EOCD is within last 64KB
     size_t search = std::min<size_t>(mf.size, 65536 + 22);
-    size_t start  = mf.size - 22;
-    size_t minp   = mf.size - search;
+    size_t start = mf.size - 22;
+    size_t minp = mf.size - search;
 
     size_t eocd = (size_t)-1;
     for(size_t p = start; p >= minp; --p) {
@@ -172,7 +172,7 @@ bool XLSXParser::extractEntry(const MappedFile& mf, const std::string& innerPath
 
     const unsigned char* e = mf.base + eocd;
     uint16_t entries = le16(e + 10);
-    uint32_t cd_off  = le32(e + 16);
+    uint32_t cd_off = le32(e + 16);
     if(cd_off >= mf.size) return false;
 
     const unsigned char* cd = mf.base + cd_off;
@@ -182,8 +182,8 @@ bool XLSXParser::extractEntry(const MappedFile& mf, const std::string& innerPath
         if(*(const unsigned*)cd != CEN_SIG) break;
 
         uint16_t method = le16(cd + 10);
-        uint32_t csize  = le32(cd + 20);
-        uint32_t usize  = le32(cd + 24);
+        uint32_t csize = le32(cd + 20);
+        uint32_t usize = le32(cd + 24);
 
         uint16_t nlen = le16(cd + 28);
         uint16_t xlen = le16(cd + 30);
@@ -212,14 +212,15 @@ bool XLSXParser::extractEntry(const MappedFile& mf, const std::string& innerPath
                 // stored
                 out.assign((const char*)comp, (size_t)usize);
                 return true;
-            } else if(method == 8) {
+            }
+            else if(method == 8) {
                 // deflate
                 out.resize((size_t)usize);
 
                 z_stream zs{};
-                zs.next_in   = const_cast<Bytef*>(comp);
-                zs.avail_in  = (uInt)csize;
-                zs.next_out  = (Bytef*)out.data();
+                zs.next_in = const_cast<Bytef*>(comp);
+                zs.avail_in = (uInt)csize;
+                zs.next_out = (Bytef*)out.data();
                 zs.avail_out = (uInt)usize;
 
                 if(inflateInit2(&zs, -MAX_WBITS) != Z_OK) return false;
@@ -227,7 +228,8 @@ bool XLSXParser::extractEntry(const MappedFile& mf, const std::string& innerPath
                 inflateEnd(&zs);
 
                 return ret == Z_STREAM_END;
-            } else {
+            }
+            else {
                 return false;
             }
         }
@@ -240,7 +242,8 @@ bool XLSXParser::extractEntry(const MappedFile& mf, const std::string& innerPath
 
 // ================= ctor =================
 XLSXParser::XLSXParser(std::string filename)
-    : filename_(std::move(filename)) {}
+    : filename_(std::move(filename)) {
+}
 
 // ================= open =================
 bool XLSXParser::open() {
@@ -275,6 +278,9 @@ bool XLSXParser::load() {
     cells_.clear();
     rows_ = cols_ = 0;
 
+    // reset header names
+    colNames_.clear();
+
     MappedFile mf{};
     if(!mapZip(mf)) return false;
 
@@ -284,6 +290,20 @@ bool XLSXParser::load() {
     if(!ok) return false;
 
     parseSheetUltraFast(xml);
+
+    // ===================================================
+    // Fill column names (use row 0 as header if present)
+    // ===================================================
+    colNames_.resize(cols_);
+    for(size_t c = 0; c < cols_; ++c) {
+        auto v = (rows_ > 0) ? valueView(0, c) : std::string_view{};
+        if(v.empty()) {
+            colNames_[c] = std::string();
+        }
+        else {
+            colNames_[c] = std::string(v);
+        }
+    }
 
     root_ = DataNode("sheet", sheets_[currentSheet_].name, 0);
     DataNode meta("meta", "", 1);
@@ -320,10 +340,12 @@ std::vector<std::string> XLSXParser::allSheets() const {
 std::string_view XLSXParser::valueView(size_t r, size_t c) const {
     if(r >= rows_ || c >= cols_) return {};
     const CellRef& cr = cells_[flatIndex(r, c)];
-    if(cr.kind == 1) {
-        if(cr.sst < sharedStrings_.size()) return std::string_view(sharedStrings_[cr.sst]);
-        return {};
+
+    // shared string
+    if(cr.kind == CK_String && cr.sst < sharedStrings_.size()) {
+        return std::string_view(sharedStrings_[cr.sst]);
     }
+
     if(cr.len == 0) return {};
     return std::string_view(sheetXML_.data() + cr.off, cr.len);
 }
@@ -349,9 +371,87 @@ const std::string& XLSXParser::value(size_t r, size_t c) const {
     }
 }
 
+// ================= CellKind helpers =================
+bool XLSXParser::equalsIgnoreCase(std::string_view a, std::string_view b) {
+    if(a.size() != b.size()) return false;
+    for(size_t i = 0; i < a.size(); ++i) {
+        unsigned char ca = (unsigned char)a[i];
+        unsigned char cb = (unsigned char)b[i];
+        if(ca >= 'A' && ca <= 'Z') ca = (unsigned char)(ca - 'A' + 'a');
+        if(cb >= 'A' && cb <= 'Z') cb = (unsigned char)(cb - 'A' + 'a');
+        if(ca != cb) return false;
+    }
+    return true;
+}
+
+bool XLSXParser::looksLikeNumber(std::string_view v) {
+    if(v.empty()) return false;
+
+    size_t i = 0;
+    if(v[i] == '+' || v[i] == '-') ++i;
+
+    bool anyDigit = false;
+    for(; i < v.size(); ++i) {
+        char c = v[i];
+        if(c >= '0' && c <= '9') { anyDigit = true; continue; }
+        break;
+    }
+
+    if(i < v.size() && v[i] == '.') {
+        ++i;
+        for(; i < v.size(); ++i) {
+            char c = v[i];
+            if(c >= '0' && c <= '9') { anyDigit = true; continue; }
+            break;
+        }
+    }
+
+    if(!anyDigit) return false;
+
+    if(i < v.size() && (v[i] == 'e' || v[i] == 'E')) {
+        ++i;
+        if(i < v.size() && (v[i] == '+' || v[i] == '-')) ++i;
+        bool expDigit = false;
+        for(; i < v.size(); ++i) {
+            char c = v[i];
+            if(c >= '0' && c <= '9') { expDigit = true; continue; }
+            return false;
+        }
+        return expDigit;
+    }
+
+    return i == v.size();
+}
+
+// ================= cellKind() =================
+//
+// CSV-like heuristic:
+// - empty => CK_Empty
+// - "null"/"nan" => CK_Empty
+// - true/false/yes/no => CK_Bool
+// - looksLikeNumber => CK_Number
+// - else => CK_String
+//
+TextFileParser::CellKind XLSXParser::cellKind(size_t r, size_t c) const
+{
+    auto v = valueView(r, c);
+    if(v.empty()) return CK_Empty;
+
+    // null-ish
+    if(equalsIgnoreCase(v, "null") || equalsIgnoreCase(v, "nan")) return CK_Empty;
+
+    // bool-ish (NO 1/0 for now)
+    if(equalsIgnoreCase(v, "true") || equalsIgnoreCase(v, "false") ||
+        equalsIgnoreCase(v, "yes") || equalsIgnoreCase(v, "no"))
+        return CK_Bool;
+
+    // number-ish
+    if(looksLikeNumber(v)) return CK_Number;
+
+    return CK_String;
+}
+
 // ================= workbook.xml parsing =================
-// NOTE: ovo je “fast/simple” – mapira sheet1.xml, sheet2.xml... po redu
-// (za većinu fajlova radi; ako ima “r:id” mapiranja, možemo dodati kasnije)
 void XLSXParser::parseWorkbook(const std::string& xml) {
     sheets_.clear();
 
@@ -420,33 +520,7 @@ void XLSXParser::parseSharedStrings(const std::string& xml) {
     }
 }
 
-TextFileParser::CellKind XLSXParser::cellKind(size_t r, size_t c) const
-{
-    if (r >= rows_ || c >= cols_) return CellKind::CK_Empty;
-
-    const CellRef& cr = cells_[r * cols_ + c];
-
-    switch (cr.kind) {
-    case 0:  return CellKind::CK_Number;
-    case 1:  return CellKind::CK_String;
-    case 2:  return CellKind::CK_Bool;
-    case 3:  return CellKind::CK_Formula;
-    case 4:  return CellKind::CK_Error;
-    default: return CellKind::CK_Empty;
-    }
-}
-
 // ================= ULTRA FAST sheet parser =================
-//
-// Strategija:
-// - sheetXML_ = xml (backing string)
-// - pronađi sve <row ...> ... </row> (spanovi)
-// - iz prvih par redova procijeni max col (po "r=" ili po count <c>)
-// - za svaki row, skeniraj <c ...> ... </c> i izvuci:
-//     - colIndex iz r="AB12" (slova)
-//     - t="s" => shared string
-//     - <v>...</v> sadržaj (offset+len) ili sst index
-//
 void XLSXParser::parseSheetUltraFast(const std::string& xml)
 {
     sheetXML_ = xml;
@@ -464,15 +538,15 @@ void XLSXParser::parseSheetUltraFast(const std::string& xml)
     rows.reserve(8192);
 
     const char* cur = base;
-    while (true) {
+    while(true) {
         const char* r1 = memmem_small(cur, end, "<row", 4);
-        if (!r1) break;
+        if(!r1) break;
         const char* rEnd = memmem_small(r1, end, "</row>", 6);
-        if (!rEnd) break;
+        if(!rEnd) break;
         rows.push_back({ r1, rEnd + 6 });
         cur = rEnd + 6;
     }
-    if (rows.empty()) return;
+    if(rows.empty()) return;
 
     rows_ = rows.size();
 
@@ -480,33 +554,33 @@ void XLSXParser::parseSheetUltraFast(const std::string& xml)
     // 2) Estimate column count (using r="AB12" if exists)
     // ===================================================
     size_t estCols = 0;
-    for (size_t i = 0; i < std::min<size_t>(rows.size(), 3); ++i) {
+    for(size_t i = 0; i < std::min<size_t>(rows.size(), 3); ++i) {
         const char* rb = rows[i].b;
         const char* re = rows[i].e;
         const char* p = rb;
 
         size_t localMax = 0;
-        while (true) {
+        while(true) {
             const char* c1 = memmem_small(p, re, "<c", 2);
-            if (!c1) break;
+            if(!c1) break;
 
             const char* gt = (const char*)memchr(c1, '>', (size_t)(re - c1));
-            if (!gt) break;
+            if(!gt) break;
 
             size_t colIndex = SIZE_MAX;
             const char* rpos = memmem_small(c1, gt, " r=\"", 4);
-            if (rpos) {
+            if(rpos) {
                 rpos += 4;
                 unsigned colNum = 0;
                 const char* rp = rpos;
-                while (rp < gt && isalpha_fast(*rp)) {
+                while(rp < gt && isalpha_fast(*rp)) {
                     colNum = colNum * 26 + (toupper_fast(*rp) - 'A' + 1);
                     ++rp;
                 }
-                if (colNum > 0) colIndex = (size_t)colNum - 1;
+                if(colNum > 0) colIndex = (size_t)colNum - 1;
             }
 
-            if (colIndex != SIZE_MAX)
+            if(colIndex != SIZE_MAX)
                 localMax = std::max(localMax, colIndex + 1);
             else
                 localMax = std::max(localMax, (size_t)1);
@@ -516,7 +590,7 @@ void XLSXParser::parseSheetUltraFast(const std::string& xml)
         estCols = std::max(estCols, localMax);
     }
 
-    if (estCols == 0) estCols = 8;
+    if(estCols == 0) estCols = 8;
     cols_ = estCols;
 
     cells_.assign(rows_ * cols_, CellRef{});
@@ -524,90 +598,83 @@ void XLSXParser::parseSheetUltraFast(const std::string& xml)
     // ===================================================
     // 3) Parse rows & cells (single-thread, ultra fast)
     // ===================================================
-    for (size_t r = 0; r < rows_; ++r) {
+    for(size_t r = 0; r < rows_; ++r) {
         const char* rowStart = rows[r].b;
         const char* rowEnd = rows[r].e;
 
         const char* ccur = rowStart;
-        while (true) {
+        while(true) {
             const char* c1 = memmem_small(ccur, rowEnd, "<c", 2);
-            if (!c1) break;
+            if(!c1) break;
 
             const char* gt = (const char*)memchr(c1, '>', (size_t)(rowEnd - c1));
-            if (!gt) break;
+            if(!gt) break;
 
             bool selfClose = (gt > c1 && *(gt - 1) == '/');
 
-            // ---------------------------------------------------
             // Parse cell type t="x"
-            // ---------------------------------------------------
             char cellType = 0; // 's','n','b','e'
             const char* tpos = memmem_small(c1, gt, " t=\"", 4);
-            if (tpos && tpos + 5 <= gt) {
+            if(tpos && tpos + 5 <= gt) {
                 cellType = *(tpos + 4);
             }
 
             bool hasFormula = false;
-            if (memmem_small(gt, rowEnd, "<f>", 3)) {
+            if(memmem_small(gt, rowEnd, "<f>", 3)) {
                 hasFormula = true;
             }
 
             uint8_t kind = CK_String;
-            if (hasFormula)                kind = CK_Formula;
-            else if (cellType == 's')      kind = CK_String;
-            else if (cellType == 'n' ||
-                cellType == 0)       kind = CK_Number;
-            else if (cellType == 'b')      kind = CK_Bool;
-            else if (cellType == 'e')      kind = CK_Error;
+            if(hasFormula)                     kind = CK_Formula;
+            else if(cellType == 's')           kind = CK_String;
+            else if(cellType == 'n' || cellType == 0) kind = CK_Number;
+            else if(cellType == 'b')           kind = CK_Bool;
+            else if(cellType == 'e')           kind = CK_Error;
 
-            // ---------------------------------------------------
             // r="AB12" → column index
-            // ---------------------------------------------------
             size_t colIndex = SIZE_MAX;
             const char* rpos = memmem_small(c1, gt, " r=\"", 4);
-            if (rpos) {
+            if(rpos) {
                 rpos += 4;
                 unsigned colNum = 0;
                 const char* rp = rpos;
-                while (rp < gt && isalpha_fast(*rp)) {
+                while(rp < gt && isalpha_fast(*rp)) {
                     colNum = colNum * 26 + (toupper_fast(*rp) - 'A' + 1);
                     ++rp;
                 }
-                if (colNum > 0) colIndex = (size_t)colNum - 1;
+                if(colNum > 0) colIndex = (size_t)colNum - 1;
             }
 
-            if (selfClose) {
-                if (colIndex != SIZE_MAX && colIndex < cols_) {
+            if(selfClose) {
+                if(colIndex != SIZE_MAX && colIndex < cols_) {
                     cells_[r * cols_ + colIndex].kind = CK_Empty;
                 }
                 ccur = gt + 1;
                 continue;
             }
 
-            // ---------------------------------------------------
             // <v>...</v>
-            // ---------------------------------------------------
             const char* v1 = memmem_small(gt, rowEnd, "<v>", 3);
-            if (!v1) { ccur = gt + 1; continue; }
+            if(!v1) { ccur = gt + 1; continue; }
 
             const char* v2 = memmem_small(v1, rowEnd, "</v>", 4);
-            if (!v2) { ccur = gt + 1; continue; }
+            if(!v2) { ccur = gt + 1; continue; }
 
             const char* valBeg = v1 + 3;
             const char* valEnd = v2;
             uint32_t off = (uint32_t)(valBeg - base);
             uint32_t len = (uint32_t)(valEnd - valBeg);
 
-            if (colIndex != SIZE_MAX && colIndex < cols_) {
+            if(colIndex != SIZE_MAX && colIndex < cols_) {
                 CellRef& cr = cells_[r * cols_ + colIndex];
                 cr.kind = kind;
 
-                if (kind == CK_String && cellType == 's') {
+                if(kind == CK_String && cellType == 's') {
                     unsigned idx = 0;
-                    if (len) {
+                    if(len) {
 #if defined(__cpp_lib_to_chars) && __cpp_lib_to_chars >= 201611L
                         auto rr = std::from_chars(valBeg, valEnd, idx);
-                        if (rr.ec != std::errc()) idx = 0;
+                        if(rr.ec != std::errc()) idx = 0;
 #else
                         idx = (unsigned)std::strtoul(
                             std::string(valBeg, valEnd).c_str(), nullptr, 10);
@@ -635,4 +702,3 @@ void XLSXParser::parseSheetUltraFast(const std::string& xml)
         cacheString_.clear();
     }
 }
-

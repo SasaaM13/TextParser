@@ -65,7 +65,7 @@
     <ClInclude Include="TextUIParser.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\..\Users\Sasa\Desktop\MR\external\csv-parser\include\external\hedley.h">
+    <ClInclude Include="DateParser.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

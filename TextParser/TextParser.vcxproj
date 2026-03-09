@@ -137,7 +137,7 @@
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp23</LanguageStandard>
-     <AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>
 C:\Users\Win\vcpkg\installed\x64-windows\include;
 %(AdditionalIncludeDirectories)
 </AdditionalIncludeDirectories>
@@ -193,6 +193,7 @@ C:\Users\Win\vcpkg\installed\x64-windows\include;
   <ItemGroup>
     <ClInclude Include="..\..\fast-cpp-csv-parser\csv.h" />
     <ClInclude Include="CSVParser.h" />
+    <ClInclude Include="DateParser.h" />
     <ClInclude Include="JSONParser.h" />
     <ClInclude Include="TextFileParser.h" />
     <ClInclude Include="TextUIParser.h" />

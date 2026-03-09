@@ -506,21 +506,26 @@ bool JSONParser::parseSlowFallback() {
     return false;
 }
 
-const std::string& JSONParser::materialize(size_t r, size_t c) const {
-    size_t k = key(r, c);
+const std::string& JSONParser::materialize(size_t r, size_t c) const
+{
+    const auto kOpt = keyChecked(r, c);
+    if(!kOpt) return empty_;
 
-    { // quick check without lock (benign data race avoided by always locking for write)
-      // can't read optional safely without lock in general; keep it simple:
-    }
+    const size_t k = *kOpt;
 
     std::lock_guard<std::mutex> lk(cacheMutex_);
-    if(k >= cacheString_.size()) return empty_;
-    if(cacheString_[k].has_value()) return *cacheString_[k];
+
+    if(k >= cacheString_.size())
+        return empty_;
+
+    if(cacheString_[k].has_value())
+        return *cacheString_[k];
 
     auto v = valueView(r, c);
-    cacheString_[k] = std::string(v); // NOTE: za escaped string možeš ovde da dodaš unescape
+    cacheString_[k] = std::string(v);   // (po potrebi unescape kasnije)
     return *cacheString_[k];
 }
+
 
 const std::string& JSONParser::value(size_t r, size_t c) const {
     if(r >= rows_ || c >= cols_) return empty_;

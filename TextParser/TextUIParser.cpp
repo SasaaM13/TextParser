@@ -780,6 +780,12 @@ void TextParserUI::ParseFile(const std::string& filepath)
             if(ok) { 
                 r = x.rowCount(); c = x.colCount(); 
                 auto kind = x.cellKind(5, 0);
+                auto kindint = x.cellKind(2,7);
+                auto kindstr = x.cellKind(2,2);
+                auto val = x.valueView(2,5);
+                auto kindval = x.cellKind(2,5);
+                auto colnames = x.getColName(0);
+                auto colnamesall = x.getColNames();
                 auto a=0;
             }
             return ok;

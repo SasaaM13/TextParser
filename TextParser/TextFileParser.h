@@ -1,10 +1,12 @@
-﻿#pragma once
+﻿// TextFileParser.h
+#pragma once
 #include <string>
 #include <vector>
 #include <optional>
 #include <cstdint>
 #include <string_view>
 #include <mutex>
+#include <limits>
 
 // ===================================================
 //   Universal Data Model for all text-based formats
@@ -30,8 +32,8 @@ public:
     enum class BoolFormat : uint8_t {
         NONE = 0,
         TRUE_FALSE = 1 << 0,  // "true"/"false"
-        YES_NO = 1 << 1,      // "yes"/"no"
-       // ONE_ZERO = 1 << 2     // "1"/"0"
+        YES_NO = 1 << 1,  // "yes"/"no"
+        // ONE_ZERO = 1 << 2  // "1"/"0"
     };
 
     enum CellKind : uint8_t {
@@ -83,11 +85,14 @@ public:
     // --- Tipizirane konverzije (na bazi valueView) ---
     std::optional<int>    toInt(size_t row, size_t col);
     std::optional<double> toDouble(size_t row, size_t col);
-    std::optional<bool>   toBool(size_t row, size_t col,
-        BoolFormat fmt = static_cast<BoolFormat>(
+
+    // Default fmt: TRUE_FALSE | YES_NO
+    static constexpr BoolFormat DefaultBoolFmt =
+        static_cast<BoolFormat>(
             static_cast<uint8_t>(BoolFormat::TRUE_FALSE) |
-            static_cast<uint8_t>(BoolFormat::YES_NO)));
-           // static_cast<uint8_t>(BoolFormat::ONE_ZERO)));
+            static_cast<uint8_t>(BoolFormat::YES_NO));
+
+    std::optional<bool>   toBool(size_t row, size_t col, BoolFormat fmt = DefaultBoolFmt);
 
 protected:
     void notifyLoaded();
@@ -99,14 +104,20 @@ protected:
     std::vector<std::string> colNames_;
     DataNode root_;
 
-    // Thread-safe lazy string cache (za value()) — flat po ćeliji
+    // Thread-safe lazy caches
     mutable std::vector<std::optional<std::string>> cacheString_;
     mutable std::mutex cacheMutex_;
 
-    // 🧠 Tipizirani cache-ovi (dodajeni!)
+    // Typed caches
     mutable std::vector<std::optional<int>>    cacheInt_;
     mutable std::vector<std::optional<double>> cacheDouble_;
     mutable std::vector<std::optional<bool>>   cacheBool_;
 
-    size_t key(size_t r, size_t c) const { return r * colCount() + c; }
+    // "seen" flags da razlikujemo: (nije parsirano) vs (parsirano i fail)
+    mutable std::vector<uint8_t> seenInt_;
+    mutable std::vector<uint8_t> seenDouble_;
+    mutable std::vector<uint8_t> seenBool_; // važi samo za DefaultBoolFmt cache
+
+    // overflow/bounds-safe key
+    std::optional<size_t> keyChecked(size_t r, size_t c) const;
 };
