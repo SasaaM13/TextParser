@@ -10,30 +10,66 @@
 // ===================================================
 void TextFileParser::notifyLoaded()
 {
+    cacheString_.clear();
+    cacheInt_.clear();
+    cacheDouble_.clear();
+    cacheBool_.clear();
+
+    seenInt_.clear();
+    seenDouble_.clear();
+    seenBool_.clear();
+}
+void TextFileParser::ensureStringCacheSize() const
+{
     const size_t rows = rowCount();
     const size_t cols = colCount();
 
-    size_t total = 0;
-    if(cols != 0 && rows > (std::numeric_limits<size_t>::max() / cols)) {
-        // overflow zaštita: ne alociramo ništa (signalizira "nema cache-a")
-        total = 0;
-    }
-    else {
-        total = rows * cols;
-    }
+    if(cols == 0 || rows == 0) return;
+    if(rows > std::numeric_limits<size_t>::max() / cols) return;
 
-    std::lock_guard<std::mutex> lock(cacheMutex_);
-
-    cacheString_.assign(total, std::nullopt);
-    cacheInt_.assign(total, std::nullopt);
-    cacheDouble_.assign(total, std::nullopt);
-    cacheBool_.assign(total, std::nullopt);
-
-    seenInt_.assign(total, 0);
-    seenDouble_.assign(total, 0);
-    seenBool_.assign(total, 0);
+    const size_t total = rows * cols;
+    if(cacheString_.size() != total)
+        cacheString_.resize(total);
 }
 
+void TextFileParser::ensureIntCacheSize() const
+{
+    const size_t rows = rowCount();
+    const size_t cols = colCount();
+
+    if(cols == 0 || rows == 0) return;
+    if(rows > std::numeric_limits<size_t>::max() / cols) return;
+
+    const size_t total = rows * cols;
+    if(cacheInt_.size() != total) cacheInt_.resize(total);
+    if(seenInt_.size() != total) seenInt_.assign(total, 0);
+}
+
+void TextFileParser::ensureDoubleCacheSize() const
+{
+    const size_t rows = rowCount();
+    const size_t cols = colCount();
+
+    if(cols == 0 || rows == 0) return;
+    if(rows > std::numeric_limits<size_t>::max() / cols) return;
+
+    const size_t total = rows * cols;
+    if(cacheDouble_.size() != total) cacheDouble_.resize(total);
+    if(seenDouble_.size() != total) seenDouble_.assign(total, 0);
+}
+
+void TextFileParser::ensureBoolCacheSize() const
+{
+    const size_t rows = rowCount();
+    const size_t cols = colCount();
+
+    if(cols == 0 || rows == 0) return;
+    if(rows > std::numeric_limits<size_t>::max() / cols) return;
+
+    const size_t total = rows * cols;
+    if(cacheBool_.size() != total) cacheBool_.resize(total);
+    if(seenBool_.size() != total) seenBool_.assign(total, 0);
+}
 // ===================================================
 //    Key helper — bounds + overflow safe
 // ===================================================
@@ -66,39 +102,45 @@ bool TextFileParser::parseDouble(std::string_view s, double& out)
 {
     if(s.empty()) return false;
 
-    // Fallback na stod (locale-dependent). Ako ti je ulaz uvijek ".", OK.
-    try {
-        std::string tmp(s);
-        size_t pos = 0;
-        double v = std::stod(tmp, &pos);
-        if(pos == tmp.size()) { out = v; return true; }
-    }
-    catch(...) {}
-    return false;
+    auto res = std::from_chars(s.data(), s.data() + s.size(), out);
+    return res.ec == std::errc() && res.ptr == s.data() + s.size();
 }
+
+static bool ieq(std::string_view a, const char* b)
+{
+    size_t n = a.size();
+    for(size_t i = 0; i < n; ++i)
+    {
+        char ca = a[i];
+        char cb = b[i];
+
+        if(cb == '\0') return false;
+
+        if(ca >= 'A' && ca <= 'Z') ca += 32;
+        if(ca != cb) return false;
+    }
+    return b[n] == '\0';
+}
+
 
 bool TextFileParser::parseBool(std::string_view s, bool& out, BoolFormat fmt)
 {
     if(s.empty()) return false;
 
-    std::string lower;
-    lower.reserve(s.size());
-    for(unsigned char c : s) lower.push_back(static_cast<char>(std::tolower(c)));
-
     const uint8_t f = static_cast<uint8_t>(fmt);
 
     if(f & static_cast<uint8_t>(BoolFormat::TRUE_FALSE)) {
-        if(lower == "true") { out = true;  return true; }
-        if(lower == "false") { out = false; return true; }
+        if(ieq(s, "true")) { out = true;  return true; }
+        if(ieq(s, "false")) { out = false; return true; }
     }
+
     if(f & static_cast<uint8_t>(BoolFormat::YES_NO)) {
-        if(lower == "yes") { out = true;  return true; }
-        if(lower == "no") { out = false; return true; }
+        if(ieq(s, "yes")) { out = true;  return true; }
+        if(ieq(s, "no")) { out = false; return true; }
     }
 
     return false;
 }
-
 // ===================================================
 //    Tipizirani interfejs — koristi brzi valueView()
 // ===================================================
@@ -107,7 +149,7 @@ std::optional<int> TextFileParser::toInt(size_t r, size_t c)
     const auto kOpt = keyChecked(r, c);
     if(!kOpt) return std::nullopt;
     const size_t k = *kOpt;
-
+    ensureIntCacheSize();
     std::lock_guard<std::mutex> lock(cacheMutex_);
     if(k >= cacheInt_.size()) return std::nullopt;
 
@@ -126,7 +168,7 @@ std::optional<double> TextFileParser::toDouble(size_t r, size_t c)
     const auto kOpt = keyChecked(r, c);
     if(!kOpt) return std::nullopt;
     const size_t k = *kOpt;
-
+    ensureDoubleCacheSize();
     std::lock_guard<std::mutex> lock(cacheMutex_);
     if(k >= cacheDouble_.size()) return std::nullopt;
 
@@ -153,7 +195,7 @@ std::optional<bool> TextFileParser::toBool(size_t r, size_t c, BoolFormat fmt)
     const auto kOpt = keyChecked(r, c);
     if(!kOpt) return std::nullopt;
     const size_t k = *kOpt;
-
+    ensureBoolCacheSize();
     std::lock_guard<std::mutex> lock(cacheMutex_);
     if(k >= cacheBool_.size()) return std::nullopt;
 

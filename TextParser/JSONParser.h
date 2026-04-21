@@ -46,7 +46,7 @@ public:
         if(r >= rows_ || c >= cols_) return {};
         return dataViews_[r * cols_ + c];
     }
-
+    size_t totalFields() const { return totalFields_; }
     // kompatibilnost: lenjo pravi std::string u base cacheString_
     const std::string& value(size_t r, size_t c) const override;
 
@@ -88,9 +88,10 @@ private:
     static bool find_object_span_in_line(std::string_view line, ObjSpan& out);
 
     // Parse one object { "k":"v", ... } into row views
-    bool parseObjectRow(std::string_view obj, std::vector<std::string_view>& keysTmp,
+    bool parseObjectRow(std::string_view obj,
+        std::vector<std::string_view>& keysTmp,
         std::vector<std::string_view>& valsTmp,
-        std::vector<std::string_view>& rowOut);
+        std::string_view* rowPtr);
 
     // columns mapping (keys -> index)
     void buildColumnsFromFirstObject(const std::vector<std::string_view>& keysTmp);
@@ -117,7 +118,8 @@ private:
     std::vector<std::string_view> dataViews_;
     size_t rows_ = 0;
     size_t cols_ = 0;
-
+    size_t totalFields_ = 0;
+    std::unordered_map<std::string_view, size_t> colIndex_;
     // columns
     // colNames_ is inherited (std::vector<std::string>)
     // We'll store col names as strings, but build them once.

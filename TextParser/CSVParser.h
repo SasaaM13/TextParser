@@ -62,8 +62,8 @@ private:
     };
 
     struct CellSpan {
-        size_t off = 0;
-        size_t len = 0;
+        uint32_t off;
+        uint32_t len;
     };
 
     void resetState();
@@ -89,6 +89,6 @@ private:
     size_t cols_ = 0;
 
     std::vector<CellSpan> cells_;
-    std::vector<std::pair<std::string, size_t>> headerIndex_;
+    std::vector<std::pair<std::string_view, size_t>> headerIndex_;
     std::unique_ptr<Buffer> backing_;
 };

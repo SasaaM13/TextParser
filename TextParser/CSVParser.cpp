@@ -258,6 +258,28 @@ bool CSVParser::looksLikeNumber(std::string_view v)
     return i == v.size();
 }
 
+static inline size_t count_newlines_fast(const char* s, size_t n)
+{
+    size_t cnt = 0;
+#if CSV_HAS_AVX2
+    const __m256i vNL = _mm256_set1_epi8('\n');
+    size_t i = 0;
+
+    for(; i + 32 <= n; i += 32)
+    {
+        __m256i chunk = _mm256_loadu_si256((const __m256i*)(s + i));
+        __m256i cmp = _mm256_cmpeq_epi8(chunk, vNL);
+        cnt += (size_t)__builtin_popcount((unsigned)_mm256_movemask_epi8(cmp));
+    }
+
+    for(; i < n; ++i)
+        cnt += (s[i] == '\n');
+#else
+    for(size_t i = 0; i < n; ++i)
+        cnt += (s[i] == '\n');
+#endif
+    return cnt;
+}
 // ==============================
 // load()
 // ==============================
@@ -274,6 +296,8 @@ bool CSVParser::load()
     const size_t n = backing_->size;
     if(!s || n == 0) { notifyLoaded(); return true; }
 
+    const size_t nlCount = count_newlines_fast(s, n);
+    const size_t estimatedRows = nlCount + ((n > 0 && s[n - 1] != '\n') ? 1 : 0);
     size_t firstEnd = 0;
     while(firstEnd < n && s[firstEnd] != '\n') ++firstEnd;
 
@@ -294,13 +318,16 @@ bool CSVParser::load()
     if(opts_.hasHeader) {
         colNames_.resize(cols_);
         headerIndex_.clear();
+        headerIndex_.reserve(cols_);
+
         for(size_t c = 0; c < cols_; ++c) {
-            std::string name(firstLine.substr(spans[c].first, spans[c].second));
-            colNames_[c] = name;
-            headerIndex_.emplace_back(name, c);
+            auto sv = firstLine.substr(spans[c].first, spans[c].second);
+            colNames_[c].assign(sv.data(), sv.size());
+            headerIndex_.emplace_back(std::string_view(colNames_[c]), c);
         }
+
         std::sort(headerIndex_.begin(), headerIndex_.end(),
-            [](auto& a, auto& b) { return a.first < b.first; });
+            [](auto a, auto b) { return a.first < b.first; });
     }
     else {
         colNames_.resize(cols_);
@@ -310,54 +337,67 @@ bool CSVParser::load()
 
     size_t dataPos = opts_.hasHeader && firstEnd < n ? firstEnd + 1 : 0;
 
-    size_t rowCount = 0;
-    for(size_t i = dataPos; i < n; ++i)
-        if(s[i] == '\n') ++rowCount;
-    if(n > dataPos && s[n - 1] != '\n') ++rowCount;
-
-    rows_ = rowCount;
-
-    if(cols_ && rows_ > std::numeric_limits<size_t>::max() / cols_)
-        return false;
-
-    cells_.resize(rows_ * cols_);
-
+    cells_.clear();
+    cells_.resize(estimatedRows * cols_);   // sve default {0,0}
+    size_t writeIdx = 0;
     size_t r = 0, c = 0;
     size_t cellStart = dataPos;
-    bool inQuotes2 = false;
-
-    auto setCell = [&](size_t off, size_t len, bool trim) {
-        if(r >= rows_ || c >= cols_) { ++c; return; }
-        if(trim && opts_.trimLastColumnCRSemis)
-            len = trimCRandSemisLen(s, off, len);
-        cells_[r * cols_ + c] = { off, len };
-        ++c;
-        };
-
-    auto finishRow = [&]() {
-        while(c < cols_) cells_[r * cols_ + c++] = { 0,0 };
-        ++r; c = 0;
-        };
-
     if(!useQuotes) {
         size_t pos = dataPos;
-        while(pos < n && r < rows_) {
+
+        while(pos < n)
+        {
+#if CSV_HAS_AVX2
+            _mm_prefetch(s + pos + 256, _MM_HINT_T0);
+#endif
+
             size_t next = findNextDelimOrNL_AVX2(s, pos, n, opts_.delimiter);
             if(next >= n) break;
 
-            if(s[next] == opts_.delimiter) {
-                setCell(cellStart, next - cellStart, false);
-                cellStart = next + 1;
+            char ch = s[next];
+
+            uint32_t off = (uint32_t)cellStart;
+            uint32_t len = (uint32_t)(next - cellStart);
+
+            if(opts_.trimLastColumnCRSemis && c == cols_ - 1)
+                len = (uint32_t)trimCRandSemisLen(s, off, len);
+
+            if(c < cols_) {
+                cells_[writeIdx + c] = CellSpan{ off, len };
             }
-            else {
-                setCell(cellStart, next - cellStart, c == cols_ - 1);
-                finishRow();
-                cellStart = next + 1;
+            ++c;
+
+            if(ch == '\n')
+            {
+                writeIdx += cols_;
+                ++r;
+                c = 0;
             }
+
+            cellStart = next + 1;
             pos = next + 1;
         }
-    }
 
+    }
+    if(cellStart < n)
+    {
+        uint32_t off = (uint32_t)cellStart;
+        uint32_t len = (uint32_t)(n - cellStart);
+
+        if(opts_.trimLastColumnCRSemis && c == cols_ - 1)
+            len = (uint32_t)trimCRandSemisLen(s, off, len);
+
+        if(c < cols_) {
+            cells_[writeIdx + c] = CellSpan{ off, len };
+        }
+        ++c;
+
+        writeIdx += cols_;
+        ++r;
+        c = 0;
+    }
+    cells_.resize(r * cols_);
+    rows_ = r;
     notifyLoaded();
     return true;
 }
@@ -371,8 +411,13 @@ std::string_view CSVParser::valueView(size_t r, size_t c) const
     if(cols_ && r > SIZE_MAX / cols_) return {};
 
     size_t idx = r * cols_ + c;
+
+    if(idx >= cells_.size()) return {};
+
     const auto& sp = cells_[idx];
+
     if(sp.len == 0 || !backing_) return {};
+
     return std::string_view(backing_->data + sp.off, sp.len);
 }
 
@@ -380,27 +425,19 @@ const std::string& CSVParser::value(size_t r, size_t c) const
 {
     static const std::string empty;
 
-    if(r >= rows_ || c >= cols_)
-        return empty;
+    if(r >= rows_ || c >= cols_) return empty;
+    if(cols_ && r > SIZE_MAX / cols_) return empty;
 
-    if(cols_ && r > SIZE_MAX / cols_)
-        return empty;
+    ensureStringCacheSize();
 
-    size_t k = r * cols_ + c;
+    const size_t k = r * cols_ + c;
+    if(k >= cacheString_.size()) return empty;
 
-    std::scoped_lock lk(cacheMutex_);
+    auto& slot = cacheString_[k];
+    if(!slot.has_value())
+        slot.emplace(valueView(r, c));
 
-    if(cacheString_.empty())
-        cacheString_.resize(rows_ * cols_);
-
-    if(k >= cacheString_.size())
-        return empty;
-
-    if(cacheString_[k])
-        return *cacheString_[k];
-
-    cacheString_[k] = std::string(valueView(r, c));
-    return *cacheString_[k];
+    return *slot;
 }
 
 
@@ -412,17 +449,32 @@ TextFileParser::CellKind CSVParser::cellKind(size_t r, size_t c) const
     auto v = valueView(r, c);
     if(v.empty()) return CK_Empty;
 
-    if(equalsIgnoreCase(v, "null") || equalsIgnoreCase(v, "nan"))
-        return CK_Empty;
+    const char ch0 = v.front();
+    const char cl0 = (ch0 >= 'A' && ch0 <= 'Z') ? (char)(ch0 + 32) : ch0;
 
-    if(equalsIgnoreCase(v, "true") || equalsIgnoreCase(v, "false") ||
-        equalsIgnoreCase(v, "yes") || equalsIgnoreCase(v, "no"))
-        return CK_Bool;
+    if(cl0 == 'n') {
+        if(equalsIgnoreCase(v, "null") || equalsIgnoreCase(v, "nan"))
+            return CK_Empty;
+        if(looksLikeNumber(v))
+            return CK_Number;
+        return CK_String;
+    }
+
+    if(cl0 == 't' || cl0 == 'f' || cl0 == 'y') {
+        if(equalsIgnoreCase(v, "true") || equalsIgnoreCase(v, "false") ||
+            equalsIgnoreCase(v, "yes") || equalsIgnoreCase(v, "no"))
+            return CK_Bool;
+    }
+
+    if((ch0 >= '0' && ch0 <= '9') || ch0 == '-' || ch0 == '+' || ch0 == '.') {
+        Date d;
+        if(parseDate(v, d)) return CK_Date;
+        if(looksLikeNumber(v)) return CK_Number;
+        return CK_String;
+    }
 
     Date d;
     if(parseDate(v, d)) return CK_Date;
-
-    if(looksLikeNumber(v)) return CK_Number;
 
     return CK_String;
 }
@@ -432,10 +484,13 @@ TextFileParser::CellKind CSVParser::cellKind(size_t r, size_t c) const
 // ==============================
 std::optional<size_t> CSVParser::columnIndex(const std::string& name) const
 {
-    auto it = std::lower_bound(headerIndex_.begin(), headerIndex_.end(), name,
-        [](auto& a, const std::string& b) { return a.first < b; });
+    std::string_view key(name);
 
-    if(it != headerIndex_.end() && it->first == name)
+    auto it = std::lower_bound(headerIndex_.begin(), headerIndex_.end(), key,
+        [](const auto& a, std::string_view b) { return a.first < b; });
+
+    if(it != headerIndex_.end() && it->first == key)
         return it->second;
+
     return std::nullopt;
 }

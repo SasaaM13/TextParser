@@ -17,6 +17,8 @@
 #include <uxtheme.h>
 #pragma comment(lib, "uxtheme.lib")
 #pragma comment(lib, "Msimg32.lib")  
+#include <commctrl.h>
+#pragma comment(lib, "comctl32.lib")
 #include <vssym32.h>
 #pragma execution_character_set("utf-8")
 #include <rapidjson/document.h>
@@ -30,6 +32,9 @@
 #include <OpenXLSX/OpenXLSX.hpp>
 #include <xlnt/xlnt.hpp>
 #include <Richedit.h>
+#ifdef GetObject
+#undef GetObject
+#endif
 #define TEST 1
 using namespace std;
 
@@ -38,89 +43,152 @@ HWND TextParserUI::hEditOutput = nullptr;
 static HWND hButtonParse = nullptr;
 static HFONT hMonoFont = nullptr;
 static HBRUSH hBgBrush = nullptr;
+static HWND hListView = nullptr;
 
+
+struct ListSortCtx
+{
+	HWND hList = nullptr;
+	int col = 0;
+	bool asc = true;
+};
+
+static ListSortCtx g_listSortCtx{};
+static double g_bestTotal = -1.0;
+
+static int CALLBACK CompareListItems(LPARAM l1, LPARAM l2, LPARAM)
+{
+	wchar_t t1[128]{}, t2[128]{};
+
+	ListView_GetItemText(g_listSortCtx.hList, (int)l1, g_listSortCtx.col, t1, 128);
+	ListView_GetItemText(g_listSortCtx.hList, (int)l2, g_listSortCtx.col, t2, 128);
+
+	int result = 0;
+
+	if(g_listSortCtx.col == 0)
+	{
+		result = _wcsicmp(t1, t2);
+	}
+	else
+	{
+		double v1 = _wtof(t1);
+		double v2 = _wtof(t2);
+
+		if(v1 < v2) result = -1;
+		else if(v1 > v2) result = 1;
+		else result = 0;
+	}
+
+	return g_listSortCtx.asc ? result : -result;
+}
 // ---------------- Utility ----------------
 static std::string GetLowerExt(const std::string& path) {
-    size_t pos = path.find_last_of('.');
-    std::string ext = (pos != std::string::npos) ? path.substr(pos + 1) : "";
-    for(auto& c : ext) c = (char)tolower((unsigned char)c);
-    return ext;
+	size_t pos = path.find_last_of('.');
+	std::string ext = (pos != std::string::npos) ? path.substr(pos + 1) : "";
+	for(auto& c : ext) c = (char)tolower((unsigned char)c);
+	return ext;
 }
 
 // =======================================================
 // JSON helpers
-// =======================================================
 static bool RapidJSON_Count(
-    const std::string& path,
-    size_t& rows,
-    size_t& cols,
-    std::string* err = nullptr)
+	const std::string& path,
+	size_t& rows,
+	size_t& fields,
+	std::string* err = nullptr)
 {
-    using namespace rapidjson;
+	using namespace rapidjson;
 
-    std::ifstream ifs(path);
-    if(!ifs) {
-        if(err) *err = "Cannot open file";
-        return false;
-    }
+	std::ifstream ifs(path);
+	if(!ifs) {
+		if(err) *err = "Cannot open file";
+		return false;
+	}
 
-    rows = 0;
-    cols = 0;
+	// === KLJUČNO: parse cijelog fajla, NE line-by-line ===
+	IStreamWrapper isw(ifs);
+	Document d;
+	d.ParseStream(isw);
 
-    std::string line;
-    while(std::getline(ifs, line)) {
-        if(line.empty()) continue;
+	if(d.HasParseError()) {
+		if(err) {
+			*err = std::string(GetParseError_En(d.GetParseError())) +
+				" (offset=" + std::to_string(d.GetErrorOffset()) + ")";
+		}
+		return false;
+	}
 
-        Document d;
-        d.Parse(line.c_str());
+	rows = 0;
+	fields = 0;
 
-        if(d.HasParseError()) {
-            if(err) *err = GetParseError_En(d.GetParseError());
-            return false;
-        }
+	// === Obrada strukture ===
+	if(d.IsArray()) {
+		rows = d.Size();
 
-        if(d.IsObject()) {
-            cols = std::max(cols, (size_t)d.MemberCount());
-        }
-        else if(d.IsArray()) {
-            cols = std::max(cols, (size_t)d.Size());
-        }
-        else {
-            cols = std::max(cols, (size_t)1);
-        }
+		for(const auto& v : d.GetArray()) {
+			if(v.IsObject())
+				fields += v.MemberCount();
+			else
+				fields += 1;
+		}
+	}
+	else if(d.IsObject()) {
+		rows = 1;
+		fields = d.MemberCount();
+	}
+	else {
+		rows = 1;
+		fields = 1;
+	}
 
-        ++rows;
-    }
-
-    return true;
+	return true;
 }
-
-static bool NlohmannJSON_Count(const std::string& path, size_t& rows, size_t& cols, std::string* err = nullptr)
+static bool NlohmannJSON_Count(
+	const std::string& path,
+	size_t& rows,
+	size_t& fields,
+	std::string* err = nullptr)
 {
-    std::ifstream ifs(path);
-    if(!ifs) { if(err) *err = "Cannot open file"; return false; }
+	std::ifstream ifs(path);
+	if(!ifs) {
+		if(err) *err = "Cannot open file";
+		return false;
+	}
 
-    rows = cols = 0;
-    std::string line;
-    std::vector<std::string> colNames;
+	rows = 0;
+	fields = 0;
 
-    while(std::getline(ifs, line)) {
-        if(line.empty()) continue;
-        try {
-            nlohmann::json j = nlohmann::json::parse(line);
-            if(j.is_object()) {
-                rows++;
-                cols = std::max(cols, j.size());
-            }
-            else if(j.is_array()) {
-                rows += j.size();
-                if(!j.empty() && j[0].is_object())
-                    cols = std::max(cols, j[0].size());
-            }
-        }
-        catch(...) { continue; }
-    }
-    return rows > 0;
+	try
+	{
+		nlohmann::json j;
+		ifs >> j;
+
+		if(j.is_array()) {
+			rows = j.size();
+
+			for(const auto& v : j) {
+				if(v.is_object())
+					fields += v.size();
+				else
+					fields += 1;
+			}
+		}
+		else if(j.is_object()) {
+			rows = 1;
+			fields = j.size();
+		}
+		else {
+			rows = 1;
+			fields = 1;
+		}
+	}
+	catch(const std::exception& ex)
+	{
+		if(err) *err = ex.what();
+		return false;
+	}
+
+	return true;
 }
 
 
@@ -129,107 +197,105 @@ static bool NlohmannJSON_Count(const std::string& path, size_t& rows, size_t& co
 // =======================================================
 // --- rekurzivni brojač ---
 static void CountAllAttrs_Tiny(const tinyxml2::XMLElement* e, size_t& attrCount) {
-    for(auto a = e->FirstAttribute(); a; a = a->Next()) attrCount++;
-    for(auto c = e->FirstChildElement(); c; c = c->NextSiblingElement())
-        CountAllAttrs_Tiny(c, attrCount);
+	for(auto a = e->FirstAttribute(); a; a = a->Next()) attrCount++;
+	for(auto c = e->FirstChildElement(); c; c = c->NextSiblingElement())
+		CountAllAttrs_Tiny(c, attrCount);
 }
 static void CountAllAttrs_Pugi(const pugi::xml_node& n, size_t& attrCount) {
-    for(auto a : n.attributes()) attrCount++;
-    for(auto c : n.children()) if(c.type() == pugi::node_element) CountAllAttrs_Pugi(c, attrCount);
+	for(auto a : n.attributes()) attrCount++;
+	for(auto c : n.children()) if(c.type() == pugi::node_element) CountAllAttrs_Pugi(c, attrCount);
 }
 
 // TinyXML2
 static void Tiny_CountAll(const tinyxml2::XMLElement* e, size_t& elemCount, size_t& attrCount) {
-    if(!e) return;
-    elemCount++;
+	if(!e) return;
+	elemCount++;
 
-    for(auto a = e->FirstAttribute(); a; a = a->Next())
-        attrCount++;
+	for(auto a = e->FirstAttribute(); a; a = a->Next())
+		attrCount++;
 
-    for(auto c = e->FirstChildElement(); c; c = c->NextSiblingElement())
-        Tiny_CountAll(c, elemCount, attrCount);
+	for(auto c = e->FirstChildElement(); c; c = c->NextSiblingElement())
+		Tiny_CountAll(c, elemCount, attrCount);
 }
 
 static void Tiny_CountAll_Text(const tinyxml2::XMLNode* n, size_t& elem, size_t& text)
 {
-    if(!n) return;
+	if(!n) return;
 
-    if(n->ToElement())
-        elem++;
+	if(n->ToElement())
+		elem++;
 
-    if(auto t = n->ToText())
-    {
-        const char* s = t->Value();
-        if(s && *s) text++;
-    }
+	if(auto t = n->ToText())
+	{
+		const char* s = t->Value();
+		if(s && *s) text++;
+	}
 
-    for(auto c = n->FirstChild(); c; c = c->NextSibling())
-        Tiny_CountAll_Text(c, elem, text);
+	for(auto c = n->FirstChild(); c; c = c->NextSibling())
+		Tiny_CountAll_Text(c, elem, text);
 }
 
 static bool TinyXML2_Count(const std::string& path, size_t& rows, size_t& cols, std::string* err = nullptr)
 {
-    tinyxml2::XMLDocument doc;
-    if(doc.LoadFile(path.c_str()) != tinyxml2::XML_SUCCESS) {
-        if(err) *err = "TinyXML2: cannot load file";
-        return false;
-    }
+	tinyxml2::XMLDocument doc;
+	if(doc.LoadFile(path.c_str()) != tinyxml2::XML_SUCCESS) {
+		if(err) *err = "TinyXML2: cannot load file";
+		return false;
+	}
 
-    size_t elem = 0, text = 0;
-    Tiny_CountAll_Text(&doc, elem, text);
+	size_t elem = 0, text = 0;
+	Tiny_CountAll_Text(&doc, elem, text);
 
-    rows = elem;
-    cols = text;
-    return elem > 0;
+	rows = elem;
+	cols = text;
+	return elem > 0;
 }
 
 // PugiXML
 static void Pugi_CountAll(const pugi::xml_node& n, size_t& elemCount, size_t& attrCount) {
-    if(!n || n.type() != pugi::node_element) return;
+	if(!n || n.type() != pugi::node_element) return;
 
-    elemCount++;
+	elemCount++;
 
-    for(auto a : n.attributes())
-        attrCount++;
+	for(auto a : n.attributes())
+		attrCount++;
 
-    for(auto c : n.children())
-        if(c.type() == pugi::node_element)
-            Pugi_CountAll(c, elemCount, attrCount);
+	for(auto c : n.children())
+		if(c.type() == pugi::node_element)
+			Pugi_CountAll(c, elemCount, attrCount);
 }
 
 static void Pugi_CountAll_Text(pugi::xml_node n, size_t& elem, size_t& text)
 {
-    if(n.type() == pugi::node_element)
-        elem++;
+	if(n.type() == pugi::node_element)
+		elem++;
 
-    if(n.type() == pugi::node_pcdata)
-        if(n.value() && *n.value())
-            text++;
+	if(n.type() == pugi::node_pcdata)
+		if(n.value() && *n.value())
+			text++;
 
-    for(auto c : n.children())
-        Pugi_CountAll_Text(c, elem, text);
+	for(auto c : n.children())
+		Pugi_CountAll_Text(c, elem, text);
 }
 
 static bool PugiXML_Count(const std::string& filepath, size_t& rows, size_t& cols, std::string* err = nullptr)
 {
-    pugi::xml_document doc;
-    if(!doc.load_file(filepath.c_str()))
-    {
-        if(err) *err = "PugiXML: cannot load file";
-        return false;
-    }
+	pugi::xml_document doc;
+	if(!doc.load_file(filepath.c_str()))
+	{
+		if(err) *err = "PugiXML: cannot load file";
+		return false;
+	}
 
-    size_t elem = 0;
-    size_t text = 0;
+	size_t elem = 0;
+	size_t text = 0;
 
-    Pugi_CountAll_Text(doc.document_element(), elem, text);
+	Pugi_CountAll_Text(doc.document_element(), elem, text);
 
-    rows = elem;   // elements
-    cols = text;   // text nodes
-    return elem > 0;
+	rows = elem;   // elements
+	cols = text;   // text nodes
+	return elem > 0;
 }
-
-
 
 
 // =======================================================
@@ -237,24 +303,24 @@ static bool PugiXML_Count(const std::string& filepath, size_t& rows, size_t& col
 // =======================================================
 static bool CSV_Vincent_Count(const std::string& path, size_t& rows, size_t& cols, std::string* err = nullptr)
 {
-    rows = cols = 0;
-    try {
-        csv::CSVFormat fmt; fmt.variable_columns(true).header_row(-1);
-        csv::CSVReader reader(path, fmt);
-        for(auto& r : reader) { rows++; cols = max(cols, (size_t)r.size()); }
-        return true;
-    }
-    catch(...) { return false; }
+	rows = cols = 0;
+	try {
+		csv::CSVFormat fmt; fmt.variable_columns(true).header_row(-1);
+		csv::CSVReader reader(path, fmt);
+		for(auto& r : reader) { rows++; cols = max(cols, (size_t)r.size()); }
+		return true;
+	}
+	catch(...) { return false; }
 }
 
 static bool CSV_RapidCSV_Count(const std::string& path, size_t& rows, size_t& cols, std::string* err = nullptr)
 {
-    try
-    {
-        rapidcsv::Document doc(path, rapidcsv::LabelParams(-1, -1));
-        rows = doc.GetRowCount(); cols = doc.GetColumnCount(); return true;
-    }
-    catch(...) { return false; }
+	try
+	{
+		rapidcsv::Document doc(path, rapidcsv::LabelParams(-1, -1));
+		rows = doc.GetRowCount(); cols = doc.GetColumnCount(); return true;
+	}
+	catch(...) { return false; }
 }
 
 // =======================================================
@@ -262,30 +328,30 @@ static bool CSV_RapidCSV_Count(const std::string& path, size_t& rows, size_t& co
 // =======================================================
 static bool XLSX_OpenXLSX_Count(const std::string& path, size_t& rows, size_t& cols, std::string* err = nullptr)
 {
-    rows = cols = 0;
-    try {
-        OpenXLSX::XLDocument doc; doc.open(path);
-        auto ws = doc.workbook().worksheet(1);
-        auto range = ws.range();
-        auto tl = range.topLeft();
-        auto br = range.bottomRight();
-        rows = br.row() - tl.row() + 1;
-        cols = br.column() - tl.column() + 1;
-        doc.close();
-        return true;
-    }
-    catch(...) { return false; }
+	rows = cols = 0;
+	try {
+		OpenXLSX::XLDocument doc; doc.open(path);
+		auto ws = doc.workbook().worksheet(1);
+		auto range = ws.range();
+		auto tl = range.topLeft();
+		auto br = range.bottomRight();
+		rows = br.row() - tl.row() + 1;
+		cols = br.column() - tl.column() + 1;
+		doc.close();
+		return true;
+	}
+	catch(...) { return false; }
 }
 
 static bool XLSX_xlnt_Count(const std::string& path, size_t& rows, size_t& cols, std::string* err = nullptr)
 {
-    try {
-        xlnt::workbook wb; wb.load(path);
-        auto ws = wb.active_sheet();
-        rows = ws.highest_row(); cols = ws.highest_column().index;
-        return true;
-    }
-    catch(...) { return false; }
+	try {
+		xlnt::workbook wb; wb.load(path);
+		auto ws = wb.active_sheet();
+		rows = ws.highest_row(); cols = ws.highest_column().index;
+		return true;
+	}
+	catch(...) { return false; }
 }
 
 // =======================================================
@@ -293,58 +359,58 @@ static bool XLSX_xlnt_Count(const std::string& path, size_t& rows, size_t& cols,
 // =======================================================
 static bool HasEmoji(const std::string& s)
 {
-    // Prosti heuristički check — traži UTF-8 bajtove iznad U+1F000
-    for(unsigned char c : s)
-        if((c & 0xF0) == 0xF0) return true; // 4-bajtni UTF-8 (emoji, simboli)
-    return false;
+	// Prosti heuristički check — traži UTF-8 bajtove iznad U+1F000
+	for(unsigned char c : s)
+		if((c & 0xF0) == 0xF0) return true; // 4-bajtni UTF-8 (emoji, simboli)
+	return false;
 }
 
 static void RE_AppendColored(HWND hRE, COLORREF color, bool bold, const std::string& text)
 {
-    CHARRANGE endSel{ -1, -1 };
-    SendMessageW(hRE, EM_EXSETSEL, 0, (LPARAM)&endSel);
+	CHARRANGE endSel{ -1, -1 };
+	SendMessageW(hRE, EM_EXSETSEL, 0, (LPARAM)&endSel);
 
-    bool hasEmoji = false;
-    for(unsigned char c : text)
-        if((c & 0xF0) == 0xF0) { hasEmoji = true; break; }
+	bool hasEmoji = false;
+	for(unsigned char c : text)
+		if((c & 0xF0) == 0xF0) { hasEmoji = true; break; }
 
-    const wchar_t* fontFace = hasEmoji ? L"Segoe UI Emoji" : L"Consolas";
+	const wchar_t* fontFace = hasEmoji ? L"Segoe UI Emoji" : L"Consolas";
 
-    CHARFORMAT2W cf{};
-    cf.cbSize = sizeof(cf);
-    cf.dwMask = CFM_COLOR | CFM_BOLD | CFM_FACE;
-    cf.crTextColor = color;
-    cf.wWeight = bold ? FW_BOLD : FW_NORMAL;
-    wcscpy_s(cf.szFaceName, fontFace);
-    SendMessageW(hRE, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
+	CHARFORMAT2W cf{};
+	cf.cbSize = sizeof(cf);
+	cf.dwMask = CFM_COLOR | CFM_BOLD | CFM_FACE;
+	cf.crTextColor = color;
+	cf.wWeight = bold ? FW_BOLD : FW_NORMAL;
+	wcscpy_s(cf.szFaceName, fontFace);
+	SendMessageW(hRE, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
 
-    int len = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
-    if(len <= 1) return;
+	int len = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
+	if(len <= 1) return;
 
-    std::wstring wtext(len - 1, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, wtext.data(), len);
+	std::wstring wtext(len - 1, L'\0');
+	MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, wtext.data(), len);
 
-    SendMessageW(hRE, EM_REPLACESEL, FALSE, (LPARAM)wtext.c_str());
+	SendMessageW(hRE, EM_REPLACESEL, FALSE, (LPARAM)wtext.c_str());
 }
 
 static void RE_AppendLine(HWND hRE, COLORREF color, bool bold, const std::string& line)
 {
-    RE_AppendColored(hRE, color, bold, line + "\r\n");
+	RE_AppendColored(hRE, color, bold, line + "\r\n");
 }
 
 static void PrettyPrintHeader(HWND hRE, const std::string& filepath)
 {
-    std::string icon = "📄";
-    std::string ext = GetLowerExt(filepath);
-    if(ext == "csv") icon = "📄 CSV";
-    else if(ext == "json") icon = "🧩 JSON";
-    else if(ext == "xml") icon = "🗂️ XML";
-    else if(ext == "xlsx") icon = "📊 XLSX";
+	std::string icon = "📄";
+	std::string ext = GetLowerExt(filepath);
+	if(ext == "csv") icon = "📄 CSV";
+	else if(ext == "json") icon = "🧩 JSON";
+	else if(ext == "xml") icon = "🗂️ XML";
+	else if(ext == "xlsx") icon = "📊 XLSX";
 
-    RE_AppendLine(hRE, RGB(30, 144, 255), true,
-        "Benchmarking parsers for: " + icon + "  →  " + filepath);
-    RE_AppendLine(hRE, RGB(120, 120, 120), false,
-        "---------------------------------------------");
+	RE_AppendLine(hRE, RGB(30, 144, 255), true,
+		"Benchmarking parsers for: " + icon + "  →  " + filepath);
+	RE_AppendLine(hRE, RGB(120, 120, 120), false,
+		"---------------------------------------------");
 }
 
 
@@ -353,71 +419,195 @@ static void PrettyPrintHeader(HWND hRE, const std::string& filepath)
 // =======================================================
 LRESULT CALLBACK TextParserUI::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
-    static HBRUSH hWhiteBrush = CreateSolidBrush(RGB(255, 255, 255));
+	static HBRUSH hWhiteBrush = CreateSolidBrush(RGB(255, 255, 255));
 
-    switch(msg)
-    {
-    case WM_CREATE:
-        hBgBrush = CreateSolidBrush(RGB(248, 248, 255));
-        break;
+	switch(msg)
+	{
+	case WM_CREATE:
+	{
+		hBgBrush = CreateSolidBrush(RGB(248, 248, 255));
 
-    case WM_ERASEBKGND: {
-        RECT rc; GetClientRect(hwnd, &rc);
-        HDC hdc = (HDC)wParam;
+		INITCOMMONCONTROLSEX icc{};
+		icc.dwSize = sizeof(icc);
+		icc.dwICC = ICC_LISTVIEW_CLASSES;
+		InitCommonControlsEx(&icc);
+		hListView = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
+			WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL,
+			40, 180, 900, 480,
+			hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
 
-        TRIVERTEX vertex[2] = {
-            {0, 0, 20000, 26000, 65535, 0x0000},
-            {rc.right, rc.bottom, 65535, 65535, 65535, 0x0000}
-        };
-        GRADIENT_RECT gRect = { 0, 1 };
-        GradientFill(hdc, vertex, 2, &gRect, 1, GRADIENT_FILL_RECT_V);
-        return 1;
-    }
+		ListView_SetExtendedListViewStyle(hListView,
+			LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
+		auto AddCol = [&](int i, const wchar_t* name, int w)
+			{
+				LVCOLUMNW col{};
+				col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+				col.pszText = const_cast<LPWSTR>(name);
+				col.cx = w;
+				col.iSubItem = i;
+				ListView_InsertColumn(hListView, i, &col);
+			};
 
-    case WM_DRAWITEM:
-    {
-        LPDRAWITEMSTRUCT dis = (LPDRAWITEMSTRUCT)lParam;
-        if(dis->CtlID == 1001) {
-            RECT rc = dis->rcItem;
-            HDC hdc = dis->hDC;
-            bool hovered = (dis->itemState & ODS_HOTLIGHT);
-            COLORREF start = hovered ? RGB(0, 180, 255) : RGB(0, 120, 215);
-            COLORREF end = RGB(0, 80, 180);
+		AddCol(0, L"Parser", 180);
+		AddCol(1, L"Load (s)", 100);
+		AddCol(2, L"Scan (s)", 100);
+		AddCol(3, L"Total (s)", 100);
+		AddCol(4, L"MB/s", 80);
+		AddCol(5, L"Values/s", 140);
+		break;
+	}
 
-            TRIVERTEX v[2] = {
-                {rc.left, rc.top, GetRValue(start) << 8, GetGValue(start) << 8, GetBValue(start) << 8, 0},
-                {rc.right, rc.bottom, GetRValue(end) << 8, GetGValue(end) << 8, GetBValue(end) << 8, 0}
-            };
-            GRADIENT_RECT gr = { 0, 1 };
-            GradientFill(hdc, v, 2, &gr, 1, GRADIENT_FILL_RECT_V);
+	case WM_ERASEBKGND:
+	{
+		RECT rc; GetClientRect(hwnd, &rc);
+		HDC hdc = (HDC)wParam;
 
-            SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, RGB(255, 255, 255));
-            DrawTextW(hdc, L"📂  Open File & Benchmark", -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-            return TRUE;
-        }
-    }
-    break;
+		TRIVERTEX vertex[2] = {
+			{0, 0, 20000, 26000, 65535, 0x0000},
+			{rc.right, rc.bottom, 65535, 65535, 65535, 0x0000}
+		};
+		GRADIENT_RECT gRect = { 0, 1 };
+		GradientFill(hdc, vertex, 2, &gRect, 1, GRADIENT_FILL_RECT_V);
+		return 1;
+	}
 
-    case WM_COMMAND:
-        if(LOWORD(wParam) == 1001) {
-            std::string filepath = OpenFileDialog(hwnd);
-            if(!filepath.empty()) {
-                SetWindowTextW(hEditOutput, L"");
-                PrettyPrintHeader(hEditOutput, filepath);
-                ParseFile(filepath);
-            }
-        }
-        break;
+	case WM_NOTIFY:
+	{
+		LPNMHDR hdr = (LPNMHDR)lParam;
 
-    case WM_DESTROY:
-        if(hBgBrush) DeleteObject(hBgBrush);
-        if(hMonoFont) DeleteObject(hMonoFont);
-        if(hWhiteBrush) DeleteObject(hWhiteBrush);
-        PostQuitMessage(0);
-        break;
-    }
-    return DefWindowProc(hwnd, msg, wParam, lParam);
+		if(hdr->hwndFrom == hListView && hdr->code == LVN_COLUMNCLICK)
+		{
+			static int sortCol = 0;
+			static bool asc = true;
+
+			auto* p = (NMLISTVIEW*)lParam;
+
+			if(sortCol == p->iSubItem) asc = !asc;
+			else { sortCol = p->iSubItem; asc = true; }
+
+			g_listSortCtx.hList = hListView;
+			g_listSortCtx.col = sortCol;
+			g_listSortCtx.asc = asc;
+
+			ListView_SortItems(hListView, CompareListItems, 0);
+
+			g_bestTotal = -1.0;
+			InvalidateRect(hListView, nullptr, TRUE);
+			return 0;
+		}
+
+		if(hdr->hwndFrom == hListView && hdr->code == NM_CUSTOMDRAW)
+		{
+			LPNMLVCUSTOMDRAW cd = (LPNMLVCUSTOMDRAW)lParam;
+
+			if(cd->nmcd.dwDrawStage == CDDS_PREPAINT)
+				return CDRF_NOTIFYITEMDRAW;
+
+			if(cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT)
+			{
+				int row = (int)cd->nmcd.dwItemSpec;
+
+				if(g_bestTotal < 0.0)
+				{
+					int count = ListView_GetItemCount(hListView);
+					g_bestTotal = 1e100;
+
+					for(int i = 0; i < count; ++i)
+					{
+						wchar_t buf[64]{};
+						ListView_GetItemText(hListView, i, 3, buf, 64); // Total kolona
+						double v = _wtof(buf);
+						if(v < g_bestTotal) g_bestTotal = v;
+					}
+				}
+
+				wchar_t buf[64]{};
+				ListView_GetItemText(hListView, row, 3, buf, 64);
+				double val = _wtof(buf);
+
+				if(fabs(val - g_bestTotal) < 1e-9)
+				{
+					cd->clrText = RGB(0, 120, 0);
+					cd->clrTextBk = RGB(220, 255, 220);
+				}
+
+				return CDRF_NEWFONT;
+			}
+		}
+
+		break;
+	}
+
+	case WM_DRAWITEM:
+	{
+		LPDRAWITEMSTRUCT dis = (LPDRAWITEMSTRUCT)lParam;
+
+		if(dis->CtlID == 1001)
+		{
+			RECT rc = dis->rcItem;
+			HDC hdc = dis->hDC;
+
+			bool hovered = (dis->itemState & ODS_HOTLIGHT);
+
+			COLORREF start = hovered ? RGB(0, 180, 255) : RGB(0, 120, 215);
+			COLORREF end = RGB(0, 80, 180);
+
+			TRIVERTEX v[2] = {
+				{rc.left, rc.top, GetRValue(start) << 8, GetGValue(start) << 8, GetBValue(start) << 8, 0},
+				{rc.right, rc.bottom, GetRValue(end) << 8, GetGValue(end) << 8, GetBValue(end) << 8, 0}
+			};
+
+			GRADIENT_RECT gr = { 0, 1 };
+			GradientFill(hdc, v, 2, &gr, 1, GRADIENT_FILL_RECT_V);
+
+			SetBkMode(hdc, TRANSPARENT);
+			SetTextColor(hdc, RGB(255, 255, 255));
+
+			DrawTextW(hdc, L"Open File", -1, &rc,
+				DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+			return TRUE;
+		}
+		break;
+	}
+
+	case WM_COMMAND:
+	{
+		if(LOWORD(wParam) == 1001)
+		{
+			std::string filepath = OpenFileDialog(hwnd);
+
+			if(!filepath.empty())
+			{
+				// clear listview
+				ListView_DeleteAllItems(hListView);
+
+				// reset fastest cache
+				g_bestTotal = -1.0;
+
+				// clear rich edit header/output
+				SetWindowTextW(hEditOutput, L"");
+				UpdateWindow(hEditOutput);
+
+				PrettyPrintHeader(hEditOutput, filepath);
+				ParseFile(filepath);
+			}
+			break;
+		}
+		break;
+	}
+
+	case WM_DESTROY:
+	{
+		if(hBgBrush) DeleteObject(hBgBrush);
+		if(hMonoFont) DeleteObject(hMonoFont);
+		if(hWhiteBrush) DeleteObject(hWhiteBrush);
+		PostQuitMessage(0);
+		break;
+	}
+	}
+
+	return DefWindowProc(hwnd, msg, wParam, lParam);
 }
 
 // =======================================================
@@ -425,41 +615,41 @@ LRESULT CALLBACK TextParserUI::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
 // =======================================================
 int TextParserUI::Run(HINSTANCE hInst, int nCmdShow)
 {
-    LoadLibraryW(L"Msftedit.dll");
+	LoadLibraryW(L"Msftedit.dll");
 
-    const wchar_t CLASS_NAME[] = L"TextParserUI";
-    WNDCLASS wc{};
-    wc.lpfnWndProc = WndProc;
-    wc.hInstance = hInst;
-    wc.lpszClassName = CLASS_NAME;
-    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
-    RegisterClass(&wc);
+	const wchar_t CLASS_NAME[] = L"TextParserUI";
+	WNDCLASS wc{};
+	wc.lpfnWndProc = WndProc;
+	wc.hInstance = hInst;
+	wc.lpszClassName = CLASS_NAME;
+	wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+	RegisterClass(&wc);
 
-    HWND hwnd = CreateWindowEx(WS_EX_APPWINDOW, CLASS_NAME, L"📊 Text File Parser Benchmark",
-        WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, 1000, 720,
-        nullptr, nullptr, hInst, nullptr);
+	HWND hwnd = CreateWindowEx(WS_EX_APPWINDOW, CLASS_NAME, L"📊 Text File Parser Benchmark",
+		WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, 1000, 720,
+		nullptr, nullptr, hInst, nullptr);
 
-    hButtonParse = CreateWindowEx(0, L"BUTTON", L"📂  Open File & Benchmark",
-        WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
-        370, 60, 260, 45, hwnd, (HMENU)1001, hInst, nullptr);
+	hButtonParse = CreateWindowEx(0, L"BUTTON", L"📂  Open File & Benchmark",
+		WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
+		370, 60, 260, 45, hwnd, (HMENU)1001, hInst, nullptr);
 
-    hEditOutput = CreateWindowExW(WS_EX_CLIENTEDGE, L"RICHEDIT50W", L"",
-        WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
-        40, 120, 900, 540, hwnd, nullptr, hInst, nullptr);
+	hEditOutput = CreateWindowExW(WS_EX_CLIENTEDGE, L"RICHEDIT50W", L"",
+		WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
+		40, 120, 900, 50, hwnd, nullptr, hInst, nullptr);
 
-    LOGFONTW lf{}; lf.lfHeight = -18; wcscpy_s(lf.lfFaceName, L"Consolas");
-    hMonoFont = CreateFontIndirectW(&lf);
-    SendMessageW(hEditOutput, WM_SETFONT, (WPARAM)hMonoFont, TRUE);
+	LOGFONTW lf{}; lf.lfHeight = -18; wcscpy_s(lf.lfFaceName, L"Consolas");
+	hMonoFont = CreateFontIndirectW(&lf);
+	SendMessageW(hEditOutput, WM_SETFONT, (WPARAM)hMonoFont, TRUE);
 
-    ShowWindow(hwnd, nCmdShow);
-    UpdateWindow(hwnd);
+	ShowWindow(hwnd, nCmdShow);
+	UpdateWindow(hwnd);
 
-    MSG msg;
-    while(GetMessage(&msg, nullptr, 0, 0)) {
-        TranslateMessage(&msg);
-        DispatchMessage(&msg);
-    }
-    return (int)msg.wParam;
+	MSG msg;
+	while(GetMessage(&msg, nullptr, 0, 0)) {
+		TranslateMessage(&msg);
+		DispatchMessage(&msg);
+	}
+	return (int)msg.wParam;
 }
 // ======================================================================
 // PRINT FIRST 50 XML ELEMENTS (Custom / TinyXML2 / PugiXML)
@@ -470,51 +660,51 @@ int TextParserUI::Run(HINSTANCE hInst, int nCmdShow)
 // ----------------------------------------------------------------------------------
 static void PrintFirst50_CustomXML(const std::string& path, int n)
 {
-    XMLParser xml(path);
-    if(!xml.load()) return;
+	XMLParser xml(path);
+	if(!xml.load()) return;
 
-    RE_AppendLine(TextParserUI::hEditOutput, RGB(0, 180, 120), true,
-        "Custom XML (first 50 elements):");
+	RE_AppendLine(TextParserUI::hEditOutput, RGB(0, 180, 120), true,
+		"Custom XML (first 50 elements):");
 
-    Timer T;
-    T.start();
+	Timer T;
+	T.start();
 
-    size_t total = xml.elementCount();
-    size_t limit = std::min<size_t>(n, total);
+	size_t total = xml.elementCount();
+	size_t limit = std::min<size_t>(n, total);
 
-    for(size_t i = 0; i < limit; i++)
-    {
-        auto opt = xml.getByIndex(i);
-        if(!opt.has_value()) continue;    // <-- fixed
+	for(size_t i = 0; i < limit; i++)
+	{
+		auto opt = xml.getByIndex(i);
+		if(!opt.has_value()) continue;    // <-- fixed
 
-        const auto& node = opt.value();   // reference
+		const auto& node = opt.value();   // reference
 
-        // ==== Trim value ====
-        std::string val(node.text);       // convert view → string
+		// ==== Trim value ====
+		std::string val(node.text);       // convert view → string
 
-        auto trim = [&](std::string& s) {
-            size_t start = 0;
-            while(start < s.size() && isspace((unsigned char)s[start])) start++;
+		auto trim = [&](std::string& s) {
+			size_t start = 0;
+			while(start < s.size() && isspace((unsigned char)s[start])) start++;
 
-            size_t end = s.size();
-            while(end > start && isspace((unsigned char)s[end - 1])) end--;
+			size_t end = s.size();
+			while(end > start && isspace((unsigned char)s[end - 1])) end--;
 
-            s = s.substr(start, end - start);
-            };
-        trim(val);
+			s = s.substr(start, end - start);
+			};
+		trim(val);
 
-        // Skip empty values
-        if(val.empty()) continue;
+		// Skip empty values
+		if(val.empty()) continue;
 
-        std::string line =
-            "[" + std::to_string(i) + "] <" + std::string(opt.value().tag) + "> = \"" + val + "\"";
+		std::string line =
+			"[" + std::to_string(i) + "] <" + std::string(opt.value().tag) + "> = \"" + val + "\"";
 
-        RE_AppendLine(TextParserUI::hEditOutput, RGB(0, 140, 120), false, line);
-    }
+		RE_AppendLine(TextParserUI::hEditOutput, RGB(0, 140, 120), false, line);
+	}
 
-    double secs = T.seconds();
-    RE_AppendLine(TextParserUI::hEditOutput, RGB(80, 80, 80), false,
-        "⏱ CustomXML extract time = " + std::to_string(secs) + " s\n");
+	double secs = T.seconds();
+	RE_AppendLine(TextParserUI::hEditOutput, RGB(80, 80, 80), false,
+		"⏱ CustomXML extract time = " + std::to_string(secs) + " s\n");
 }
 
 
@@ -525,43 +715,43 @@ static void PrintFirst50_CustomXML(const std::string& path, int n)
 // --------------------------------------------
 static void PrintFirst50_Tiny(const std::string& path, int ns)
 {
-    tinyxml2::XMLDocument doc;
-    if(doc.LoadFile(path.c_str()) != tinyxml2::XML_SUCCESS)
-        return;
+	tinyxml2::XMLDocument doc;
+	if(doc.LoadFile(path.c_str()) != tinyxml2::XML_SUCCESS)
+		return;
 
-    RE_AppendLine(TextParserUI::hEditOutput, RGB(180, 120, 0), true,
-        "TinyXML2 (first n elements):");
+	RE_AppendLine(TextParserUI::hEditOutput, RGB(180, 120, 0), true,
+		"TinyXML2 (first n elements):");
 
-    Timer T;
-    T.start();
+	Timer T;
+	T.start();
 
-    size_t printed = 0;
+	size_t printed = 0;
 
-    std::function<void(const tinyxml2::XMLNode*)> dfs =
-        [&](const tinyxml2::XMLNode* n)
-        {
-            if(printed >= ns || !n) return;
+	std::function<void(const tinyxml2::XMLNode*)> dfs =
+		[&](const tinyxml2::XMLNode* n)
+		{
+			if(printed >= ns || !n) return;
 
-            if(auto e = n->ToElement())
-            {
-                const char* text = e->GetText();
-                if(text && *text)
-                {
-                    std::string line = "[" + std::to_string(printed) + "] <"
-                        + e->Name() + "> = \"" + text + "\"";
-                    RE_AppendLine(TextParserUI::hEditOutput, RGB(180, 140, 0), false, line);
-                    printed++;
-                }
-            }
-            for(auto c = n->FirstChild(); c && printed < ns; c = c->NextSibling())
-                dfs(c);
-        };
+			if(auto e = n->ToElement())
+			{
+				const char* text = e->GetText();
+				if(text && *text)
+				{
+					std::string line = "[" + std::to_string(printed) + "] <"
+						+ e->Name() + "> = \"" + text + "\"";
+					RE_AppendLine(TextParserUI::hEditOutput, RGB(180, 140, 0), false, line);
+					printed++;
+				}
+			}
+			for(auto c = n->FirstChild(); c && printed < ns; c = c->NextSibling())
+				dfs(c);
+		};
 
-    dfs(doc.RootElement());
+	dfs(doc.RootElement());
 
-    double secs = T.seconds();
-    RE_AppendLine(TextParserUI::hEditOutput, RGB(80, 80, 80), false,
-        "⏱ TinyXML2 extract time = " + std::to_string(secs) + " s\n");
+	double secs = T.seconds();
+	RE_AppendLine(TextParserUI::hEditOutput, RGB(80, 80, 80), false,
+		"⏱ TinyXML2 extract time = " + std::to_string(secs) + " s\n");
 }
 
 
@@ -571,42 +761,42 @@ static void PrintFirst50_Tiny(const std::string& path, int ns)
 // --------------------------------------------
 static void PrintFirst50_Pugi(const std::string& path, int ns)
 {
-    pugi::xml_document doc;
-    if(!doc.load_file(path.c_str()))
-        return;
+	pugi::xml_document doc;
+	if(!doc.load_file(path.c_str()))
+		return;
 
-    RE_AppendLine(TextParserUI::hEditOutput, RGB(0, 120, 200), true,
-        "PugiXML (first n elements):");
+	RE_AppendLine(TextParserUI::hEditOutput, RGB(0, 120, 200), true,
+		"PugiXML (first n elements):");
 
-    Timer T;
-    T.start();
+	Timer T;
+	T.start();
 
-    size_t printed = 0;
+	size_t printed = 0;
 
-    std::function<void(pugi::xml_node)> dfs =
-        [&](pugi::xml_node n)
-        {
-            if(printed >= ns) return;
-            if(n.type() == pugi::node_element)
-            {
-                auto txt = n.first_child();
-                if(txt && txt.type() == pugi::node_pcdata)
-                {
-                    std::string line = "[" + std::to_string(printed) + "] <" +
-                        std::string(n.name()) + "> = \"" + txt.value() + "\"";
-                    RE_AppendLine(TextParserUI::hEditOutput, RGB(0, 150, 200), false, line);
-                    printed++;
-                }
-            }
-            for(pugi::xml_node c : n.children())
-                if(printed < ns) dfs(c);
-        };
+	std::function<void(pugi::xml_node)> dfs =
+		[&](pugi::xml_node n)
+		{
+			if(printed >= ns) return;
+			if(n.type() == pugi::node_element)
+			{
+				auto txt = n.first_child();
+				if(txt && txt.type() == pugi::node_pcdata)
+				{
+					std::string line = "[" + std::to_string(printed) + "] <" +
+						std::string(n.name()) + "> = \"" + txt.value() + "\"";
+					RE_AppendLine(TextParserUI::hEditOutput, RGB(0, 150, 200), false, line);
+					printed++;
+				}
+			}
+			for(pugi::xml_node c : n.children())
+				if(printed < ns) dfs(c);
+		};
 
-    dfs(doc.document_element());
+	dfs(doc.document_element());
 
-    double secs = T.seconds();
-    RE_AppendLine(TextParserUI::hEditOutput, RGB(80, 80, 80), false,
-        "⏱ PugiXML extract time = " + std::to_string(secs) + " s\n");
+	double secs = T.seconds();
+	RE_AppendLine(TextParserUI::hEditOutput, RGB(80, 80, 80), false,
+		"⏱ PugiXML extract time = " + std::to_string(secs) + " s\n");
 }
 
 
@@ -615,252 +805,626 @@ static void PrintFirst50_Pugi(const std::string& path, int ns)
 // =======================================================
 std::string TextParserUI::OpenFileDialog(HWND hwnd)
 {
-    char filename[MAX_PATH] = "";
-    OPENFILENAMEA ofn{}; ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = hwnd;
-    ofn.lpstrFilter = "All Supported\0*.csv;*.json;*.xml;*.xlsx\0CSV\0*.csv\0JSON\0*.json\0XML\0*.xml\0XLSX\0*.xlsx\0";
-    ofn.lpstrFile = filename; ofn.nMaxFile = MAX_PATH;
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-    return GetOpenFileNameA(&ofn) ? std::string(filename) : "";
+	char filename[MAX_PATH] = "";
+	OPENFILENAMEA ofn{}; ofn.lStructSize = sizeof(ofn);
+	ofn.hwndOwner = hwnd;
+	ofn.lpstrFilter = "All Supported\0*.csv;*.json;*.xml;*.xlsx\0CSV\0*.csv\0JSON\0*.json\0XML\0*.xml\0XLSX\0*.xlsx\0";
+	ofn.lpstrFile = filename; ofn.nMaxFile = MAX_PATH;
+	ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+	return GetOpenFileNameA(&ofn) ? std::string(filename) : "";
 }
 
-// =======================================================
-// Benchmark framework + output
-// =======================================================
-struct BenchLine {
-    std::string name; bool ok; size_t rows, cols; double secs; std::string err;
+// ======================= BENCH STRUCT =======================
+struct BenchLine
+{
+	std::string name;
+	bool ok = false;
+
+	size_t rows = 0;
+	size_t cols = 0;
+
+	double loadSecs = 0.0;
+	double scanSecs = 0.0;
+	double parseSecs = 0.0;
+	double mbPerSec = 0.0;
+	uint64_t valuesPerSec = 0;
+
+	std::string err;
+
+	double total() const
+	{
+		return loadSecs + scanSecs + parseSecs;
+	}
 };
 
-template<typename F>
-static BenchLine RunOne(const std::string& name, F&& f)
+// ======================= MEASURE =======================
+static double Measure(std::function<void()> fn)
 {
-    BenchLine b{ name,false,0,0,0.0,{} };
-    Timer t; t.start();
-    try { b.ok = f(b.rows, b.cols, b.err); }
-    catch(...) { b.ok = false; }
-    t.end(); b.secs = t.seconds();
-    return b;
+	Timer t; t.start();
+	fn();
+	t.end();
+	return t.seconds();
 }
 
-static void PrintLine(const BenchLine& b)
+// ======================= FULL SCAN =======================
+template<typename GetValueFn>
+double RunFullScan(size_t rows, size_t cols, GetValueFn get)
 {
-    std::ostringstream ln;
-    if(b.ok) {
-        ln << std::left << std::setw(22) << b.name << "  ";
+	return Measure([&]()
+		{
+			volatile size_t sink = 0;
 
-        // detektuj tip benchmarka iz imena
-        std::string lower = b.name;
-        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+			for(size_t i = 0; i < rows; ++i)
+				for(size_t j = 0; j < cols; ++j)
+					sink += get(i, j).size();
+		});
+}
 
-        if(lower.find("csv") != std::string::npos ||
-            lower.find("xlsx") != std::string::npos)
-        {
-            ln << "rows=" << b.rows << ", cols=" << b.cols;
-        }
-        else if(lower.find("json") != std::string::npos)
-        {
-            ln << "objects=" << b.rows << ", fields=" << b.cols;
-        }
-        else if(lower.find("xml") != std::string::npos)
-        {
-            ln << "elements=" << b.rows << ", textNodes=" << b.cols;
-        }
-        else {
-            ln << "entries=" << b.rows << ", values=" << b.cols;
-        }
+// ======================= PARSE ALL =======================
+template<typename GetValueFn>
+double RunParseAll(size_t rows, size_t cols, GetValueFn get)
+{
+	return Measure([&]()
+		{
+			volatile double sum = 0.0;
 
-        ln << ", t=" << std::fixed << std::setprecision(4) << b.secs << "s";
-        RE_AppendLine(TextParserUI::hEditOutput, RGB(34, 139, 34), false, ln.str());
-    }
-    else {
-        ln << std::left << std::setw(22) << b.name << "  FAILED";
-        if(!b.err.empty()) ln << "  (" << b.err << ")";
-        RE_AppendLine(TextParserUI::hEditOutput, RGB(178, 34, 34), true, ln.str());
-    }
+			for(size_t i = 0; i < rows; ++i)
+				for(size_t j = 0; j < cols; ++j)
+				{
+					auto v = get(i, j);
+					sum += std::strtod(v.data(), nullptr);
+				}
+		});
+}
+
+// ================= HELPERS =================
+inline double safeTime(double t)
+{
+	return (t < 1e-6) ? 1e-6 : t;
+}
+
+inline std::string fmtTime(double v)
+{
+	std::ostringstream ss;
+	if(v < 0.001) ss << std::fixed << std::setprecision(6) << v;
+	else if(v < 0.1) ss << std::fixed << std::setprecision(4) << v;
+	else ss << std::fixed << std::setprecision(3) << v;
+	return ss.str();
+}
+
+inline int getRepeat(double fileMB)
+{
+	if(fileMB < 0.1) return 200;
+	if(fileMB < 1.0) return 50;
+	if(fileMB < 5.0) return 10;
+	return 1;
 }
 
 
-// =======================================================
-// ParseFile + comparison section
-// =======================================================
+// ================= MAIN =================
 void TextParserUI::ParseFile(const std::string& filepath)
 {
-    const std::string ext = GetLowerExt(filepath);
-    std::vector<BenchLine> lines;
+	const std::string ext = GetLowerExt(filepath);
+	std::vector<BenchLine> lines;
 
-    if(ext == "csv") {
-        lines.push_back(RunOne("Custom CSV", [&](size_t& r, size_t& c, std::string& e) {
-            CSVParser::Options opt;
-            opt.delimiter = ',';
-            opt.hasHeader = true;
-            opt.allowQuotes = false; 
-            opt.useMMap = true;
+	double fileMB = 0.0;
+	try {
+		fileMB = std::filesystem::file_size(filepath) / (1024.0 * 1024.0);
+	}
+	catch(...) {}
 
-            CSVParser csv(filepath, opt);
-            bool ok = csv.load();
-            if(ok) 
-            { 
-#ifdef TEST
-                auto cols = csv.getColNames();
-                auto col1 = csv.getColName(0);
-                auto valf  = csv.valueView(0,0);
-                auto kind = csv.cellKind(0,0);
-                auto val = csv.valueView(0,1);
-                auto val2 = csv.valueView(1,2);
-                auto t = csv.toDouble(1,1);
-                auto b1 = csv.cellKind(1, 2);
-                auto b2 = csv.cellKind(1,3);
-                auto i1 = csv.toInt(2,0);
-                auto valb = csv.valueView(2,4);
-                auto bb = csv.toBool(2,4, TextFileParser::BoolFormat::TRUE_FALSE);
-                auto kind2 = csv.cellKind(3,2);
-#endif
-                r = csv.rowCount(); c = csv.colCount(); 
-            }
-            return ok;
-            }));
+	// preload
+	std::string fileContent;
+	{
+		std::ifstream f(filepath, std::ios::binary);
+		fileContent.assign((std::istreambuf_iterator<char>(f)),
+			std::istreambuf_iterator<char>());
+	}
 
-        lines.push_back(RunOne("vincent csv-parser", [&](size_t& r, size_t& c, std::string& e) {
-            return CSV_Vincent_Count(filepath, r, c, &e);
-            }));
+	int repeat = getRepeat(fileMB);
 
-        lines.push_back(RunOne("rapidcsv", [&](size_t& r, size_t& c, std::string& e) {
-            return CSV_RapidCSV_Count(filepath, r, c, &e);
-            }));
-    }
-    else if(ext == "json") {
-        lines.push_back(RunOne("Custom JSON", [&](size_t& r, size_t& c, std::string& e) {
-            JSONParser j(filepath);
-            bool ok = j.load();
-            if(ok) 
-            { 
-#if TEST
-                auto s = j.valueView(0,0);
-                auto e = j.valueView(1,0);
-                auto ee = j.valueView(1, 1);
-                auto eee = j.valueView(4, 1);
-                auto i = j.value(6,7);
-                auto a = 1;
-#endif
-                r = j.rowCount(); c = j.colCount(); 
-            }
-            return ok;
-            }));
-        lines.push_back(RunOne("RapidJSON", [&](size_t& r, size_t& c, std::string& e) {
-            return RapidJSON_Count(filepath, r, c, &e);
-            }));
-        lines.push_back(RunOne("nlohmann/json", [&](size_t& r, size_t& c, std::string& e) {
-            return NlohmannJSON_Count(filepath, r, c, &e);
-            }));
-    }
-    else if(ext == "xml") {
-        lines.push_back(RunOne("Custom XML", [&](size_t& r, size_t& c, std::string& e) {
-            XMLParser x(filepath);
-            bool ok = x.load();
-            if(ok) { r = x.elementCount(); c = x.textNodeCount(); 
-#if TEST
-            auto s = x.valueView(1, 1);
-            int k = 0;
-#endif
+	// ================= CSV =================
+	if(ext == "csv")
+	{
+		// ===== Custom CSV =====
+		lines.push_back([&]()
+			{
+				BenchLine b; b.name = "Custom CSV";
 
-            }
-            return ok;
-            }));
-        lines.push_back(RunOne("tinyxml2", [&](size_t& r, size_t& c, std::string& e) {
-            return TinyXML2_Count(filepath, r, c, &e);
-            }));
-        lines.push_back(RunOne("pugixml", [&](size_t& r, size_t& c, std::string& e) {
-            return PugiXML_Count(filepath, r, c, &e);
-            }));
-    }
-    else if(ext == "xlsx") {
-        lines.push_back(RunOne("Custom XLSX", [&](size_t& r, size_t& c, std::string& e) {
-            XLSXParser x(filepath);
-            bool ok = x.load();
-            if(ok) { 
-                r = x.rowCount(); c = x.colCount(); 
-                auto kind = x.cellKind(5, 0);
-                auto kindint = x.cellKind(2,7);
-                auto kindstr = x.cellKind(2,2);
-                auto val = x.valueView(2,5);
-                auto kindval = x.cellKind(2,5);
-                auto colnames = x.getColName(0);
-                auto colnamesall = x.getColNames();
-                auto a=0;
-            }
-            return ok;
-            }));
-        lines.push_back(RunOne("OpenXLSX", [&](size_t& r, size_t& c, std::string& e) {
-            return XLSX_OpenXLSX_Count(filepath, r, c, &e);
-            }));
-        lines.push_back(RunOne("xlnt", [&](size_t& r, size_t& c, std::string& e) {
-            return XLSX_xlnt_Count(filepath, r, c, &e);
-            }));
-    }
-    else {
-        RE_AppendLine(hEditOutput, RGB(178, 34, 34), true, "Unsupported file type: " + ext);
-        return;
-    }
+				CSVParser::Options opt;
+				opt.delimiter = ',';
+				opt.hasHeader = true;
+				opt.allowQuotes = false;
+				opt.useMMap = true;
 
-    if(ext == "xml")
-    {
-#if 0
-        int n = 5000;
-        RE_AppendLine(hEditOutput, RGB(100, 100, 100), true,
-            "\n🔎 Extracting first nth XML elements...\n");
+				CSVParser csv(filepath, opt);
 
-        PrintFirst50_CustomXML(filepath,n);
-        PrintFirst50_Tiny(filepath,n);
-        PrintFirst50_Pugi(filepath,n);
-#endif
-    }
+				Timer t; t.start();
+				b.ok = csv.load();
+				t.end(); b.loadSecs = t.seconds();
+				if(!b.ok) return b;
+				size_t r = csv.rowCount();
+				size_t c = csv.colCount();
+				size_t values = r * c;
 
-    // Print individual results
-    for(auto& b : lines) PrintLine(b);
+				b.scanSecs = Measure([&]()
+					{
+						volatile size_t sink = 0;
+						for(int rep = 0; rep < repeat; ++rep)
+							for(size_t i = 0; i < r; ++i)
+								for(size_t j = 0; j < c; ++j)
+									sink += csv.valueView(i, j).size();
+					}) / repeat;
 
-    // ===== Enhanced Performance Comparison Section =====
-    std::vector<BenchLine> okLines;
-    for(auto& b : lines)
-        if(b.ok)
-            okLines.push_back(b);
+				b.valuesPerSec = values / safeTime(b.scanSecs);
+				b.mbPerSec = fileMB / safeTime(b.loadSecs + b.scanSecs);
 
-    if(okLines.size() < 2) return;
+				return b;
+			}());
 
-    std::sort(okLines.begin(), okLines.end(),
-        [](const BenchLine& a, const BenchLine& b) { return a.secs < b.secs; });
+		// ===== Vincent CSV =====
+		lines.push_back([&]()
+			{
+				BenchLine b; b.name = "Vincent CSV";
 
-    double fastest = okLines.front().secs;
-    RE_AppendLine(hEditOutput, RGB(100, 100, 100), true, "\r\n📈 Performance Comparison");
-    RE_AppendLine(hEditOutput, RGB(150, 150, 150), false, "------------------------------------------");
+				Timer t; t.start();
+				csv::CSVReader reader(filepath);
+				t.end(); b.loadSecs = t.seconds();
 
-    for(size_t i = 0; i < okLines.size(); ++i) {
-        const auto& b = okLines[i];
-        double ratio = b.secs / fastest;
-        double slower = (ratio - 1.0) * 100.0;
+				size_t values = 0;
+				for(auto& row : reader)
+					values += row.size();
 
-        std::string medal;
-        COLORREF color = RGB(50, 50, 50);
-        if(i == 0) { medal = "[#1]"; color = RGB(255, 215, 0); }
-        else if(i == 1) { medal = "[#2]"; color = RGB(192, 192, 192); }
-        else if(i == 2) { medal = "[#3]"; color = RGB(205, 127, 50); }
+				b.scanSecs = Measure([&]()
+					{
+						volatile size_t sink = 0;
+						for(int rep = 0; rep < repeat; ++rep)
+						{
+							csv::CSVReader r(filepath);
+							for(auto& row : r)
+								for(auto& f : row)
+									sink += f.get<std::string_view>().size();
+						}
+					}) / repeat;
 
-        // ASCII progress bar
-        int barLen = 30;
-        int fill = (int)(barLen / ratio);
-        if(fill < 1) fill = 1;
-        if(fill > barLen) fill = barLen;
-        std::string bar(fill, '█');
-        bar += std::string(barLen - fill, '░');
+				b.ok = true;
+				b.valuesPerSec = values / safeTime(b.scanSecs);
+				b.mbPerSec = fileMB / safeTime(b.loadSecs + b.scanSecs);
 
-        std::ostringstream line;
-        line << std::left << std::setw(2) << medal << " "
-            << std::left << std::setw(20) << b.name
-            << " | " << std::right << std::setw(7)
-            << std::fixed << std::setprecision(4) << b.secs << " s"
-            << " | " << std::left << std::setw(12)
-            << (i == 0 ? "FASTEST" : (std::to_string((int)slower) + "% slower"));
+				return b;
+			}());
 
-        RE_AppendLine(hEditOutput, color, false, line.str());
-    }
+		// ===== rapidcsv =====
+		lines.push_back([&]()
+			{
+				BenchLine b; b.name = "rapidcsv";
 
+				std::istringstream ss(fileContent);
+
+				Timer t; t.start();
+				rapidcsv::Document doc(ss);
+				size_t r = doc.GetRowCount();
+				size_t c = doc.GetColumnCount();
+				t.end(); b.loadSecs = t.seconds();
+
+				size_t values = r * c;
+
+				b.scanSecs = Measure([&]()
+					{
+						volatile size_t sink = 0;
+						for(int rep = 0; rep < repeat; ++rep)
+							for(size_t i = 0; i < r; ++i)
+								for(size_t j = 0; j < c; ++j)
+									sink += doc.GetCell<std::string>(j, i).size();
+					}) / repeat;
+
+				b.ok = true;
+				b.valuesPerSec = values / safeTime(b.scanSecs);
+				b.mbPerSec = fileMB / safeTime(b.loadSecs + b.scanSecs);
+
+				return b;
+			}());
+	}
+
+	// ================= JSON =================
+	else if(ext == "json")
+	{
+		lines.push_back([&]()
+			{
+				BenchLine b; b.name = "Custom JSON";
+
+				JSONParser j(filepath);
+
+				Timer t; t.start();
+				b.ok = j.load();
+				t.end(); b.loadSecs = t.seconds();
+				if(!b.ok) return b;
+
+				size_t values = j.rowCount() * j.totalFields();
+
+				b.scanSecs = Measure([&]()
+					{
+						volatile size_t sink = 0;
+						for(int rep = 0; rep < repeat; ++rep)
+							for(size_t i = 0; i < j.rowCount(); ++i)
+								for(size_t k = 0; k < j.colCount(); ++k)
+									sink += j.valueView(i, k).size();
+					}) / repeat;
+
+				b.valuesPerSec = values / safeTime(b.scanSecs);
+				b.mbPerSec = fileMB / safeTime(b.loadSecs + b.scanSecs);
+
+				return b;
+			}());
+
+		lines.push_back([&]()
+			{
+				BenchLine b; b.name = "RapidJSON";
+
+				rapidjson::Document doc;
+
+				Timer t; t.start();
+				doc.Parse(fileContent.c_str());
+				t.end(); b.loadSecs = t.seconds();
+				if(doc.HasParseError()) return b;
+
+				size_t values = 0;
+				std::function<void(const rapidjson::Value&)> walk;
+
+				walk = [&](const rapidjson::Value& v)
+					{
+						if(v.IsString()) { values++; }
+						else if(v.IsArray()) for(auto& x : v.GetArray()) walk(x);
+						else if(v.IsObject()) for(auto& m : v.GetObject()) walk(m.value);
+					};
+
+				walk(doc);
+
+				b.scanSecs = Measure([&]()
+					{
+						volatile size_t sink = 0;
+						for(int rep = 0; rep < repeat; ++rep)
+							walk(doc);
+					}) / repeat;
+
+				b.ok = true;
+				b.valuesPerSec = values / safeTime(b.scanSecs);
+				b.mbPerSec = fileMB / safeTime(b.loadSecs + b.scanSecs);
+
+				return b;
+			}());
+		lines.push_back([&]()
+			{
+				BenchLine b; b.name = "nlohmann/json";
+
+				Timer t; t.start();
+				nlohmann::json j = nlohmann::json::parse(fileContent);
+				t.end(); b.loadSecs = t.seconds();
+
+				size_t values = 0;
+
+				std::function<void(const nlohmann::json&)> walk;
+				walk = [&](const nlohmann::json& v)
+					{
+						if(v.is_string()) values++;
+						else if(v.is_array()) for(auto& x : v) walk(x);
+						else if(v.is_object()) for(auto& x : v.items()) walk(x.value());
+					};
+				walk(j);
+
+				b.scanSecs = Measure([&]()
+					{
+						for(int rep = 0; rep < repeat; ++rep)
+							walk(j);
+					}) / repeat;
+
+				b.ok = true;
+				b.valuesPerSec = values / safeTime(b.scanSecs);
+				b.mbPerSec = fileMB / safeTime(b.loadSecs + b.scanSecs);
+
+				return b;
+			}());
+	}
+
+	// ================= XML =================
+	else if(ext == "xml")
+	{
+		// Custom
+		lines.push_back([&]()
+			{
+				BenchLine b; b.name = "Custom XML";
+
+				XMLParser x(filepath);
+
+				Timer t; t.start();
+				b.ok = x.load();
+				t.end(); b.loadSecs = t.seconds();
+				if(!b.ok) return b;
+
+				size_t values = x.textNodeCount();
+
+				b.scanSecs = Measure([&]()
+					{
+						volatile size_t sink = 0;
+						for(int rep = 0; rep < repeat; ++rep)
+							for(size_t i = 0; i < values; ++i)
+							{
+								auto v = x.getByIndex(i);
+								if(v) sink += v->text.size();
+							}
+					}) / repeat;
+
+				b.valuesPerSec = values / safeTime(b.scanSecs);
+				b.mbPerSec = fileMB / safeTime(b.loadSecs + b.scanSecs);
+
+				return b;
+			}());
+
+		// TinyXML2
+		lines.push_back([&]()
+			{
+				BenchLine b; b.name = "tinyxml2";
+
+				tinyxml2::XMLDocument doc;
+
+				Timer t; t.start();
+				b.ok = doc.Parse(fileContent.c_str()) == tinyxml2::XML_SUCCESS;
+				t.end(); b.loadSecs = t.seconds();
+				if(!b.ok) return b;
+
+				// ===== COUNT (SAMO JEDNOM) =====
+				size_t values = 0;
+
+				std::function<void(tinyxml2::XMLNode*)> countWalk;
+				countWalk = [&](tinyxml2::XMLNode* n)
+					{
+						if(auto txt = n->ToText())
+							if(txt->Value() && *txt->Value())
+								values++;
+
+						for(auto c = n->FirstChild(); c; c = c->NextSibling())
+							countWalk(c);
+					};
+
+				countWalk(doc.RootElement());
+
+				// ===== SCAN (NE MIJENJA values) =====
+				b.scanSecs = Measure([&]()
+					{
+						volatile size_t sink = 0;
+
+						std::function<void(tinyxml2::XMLNode*)> scanWalk;
+						scanWalk = [&](tinyxml2::XMLNode* n)
+							{
+								if(auto txt = n->ToText())
+									if(txt->Value())
+										sink += strlen(txt->Value());
+
+								for(auto c = n->FirstChild(); c; c = c->NextSibling())
+									scanWalk(c);
+							};
+
+						for(int rep = 0; rep < repeat; ++rep)
+							scanWalk(doc.RootElement());
+					}) / repeat;
+
+				b.valuesPerSec = values / safeTime(b.scanSecs);
+				b.mbPerSec = fileMB / safeTime(b.loadSecs + b.scanSecs);
+				b.ok = true;
+
+				return b;
+			}());
+
+		// Pugi
+		lines.push_back([&]()
+			{
+				BenchLine b; b.name = "pugixml";
+
+				pugi::xml_document doc;
+
+				Timer t; t.start();
+				b.ok = doc.load_buffer(fileContent.data(), fileContent.size());
+				t.end(); b.loadSecs = t.seconds();
+				if(!b.ok) return b;
+
+				// ===== COUNT =====
+				size_t values = 0;
+
+				std::function<void(pugi::xml_node)> countWalk;
+				countWalk = [&](pugi::xml_node n)
+					{
+						if(n.type() == pugi::node_pcdata && *n.value())
+							values++;
+
+						for(auto c : n.children())
+							countWalk(c);
+					};
+
+				countWalk(doc);
+
+				// ===== SCAN =====
+				b.scanSecs = Measure([&]()
+					{
+						volatile size_t sink = 0;
+
+						std::function<void(pugi::xml_node)> scanWalk;
+						scanWalk = [&](pugi::xml_node n)
+							{
+								if(n.type() == pugi::node_pcdata)
+									sink += strlen(n.value());
+
+								for(auto c : n.children())
+									scanWalk(c);
+							};
+
+						for(int rep = 0; rep < repeat; ++rep)
+							scanWalk(doc);
+					}) / repeat;
+
+				b.valuesPerSec = values / safeTime(b.scanSecs);
+				b.mbPerSec = fileMB / safeTime(b.loadSecs + b.scanSecs);
+				b.ok = true;
+
+				return b;
+			}());
+	}
+	// ================= XLSX =================
+	else if(ext == "xlsx")
+	{
+		// Custom
+		lines.push_back([&]()
+			{
+				BenchLine b; b.name = "Custom XLSX";
+
+				XLSXParser x(filepath);
+
+				Timer t; t.start();
+				b.ok = x.load();
+				t.end(); b.loadSecs = t.seconds();
+				if(!b.ok) return b;
+
+				size_t r = x.rowCount();
+				size_t c = x.colCount();
+				size_t values = r * c;
+
+				b.scanSecs = Measure([&]()
+					{
+						volatile size_t sink = 0;
+						for(int rep = 0; rep < repeat; ++rep)
+							for(size_t i = 0; i < r; ++i)
+								for(size_t j = 0; j < c; ++j)
+									sink += x.valueView(i, j).size();
+					}) / repeat;
+
+				b.valuesPerSec = values / safeTime(b.scanSecs);
+				b.mbPerSec = fileMB / safeTime(b.loadSecs + b.scanSecs);
+
+				return b;
+			}());
+
+		// OpenXLSX
+		lines.push_back([&]()
+			{
+				BenchLine b; b.name = "OpenXLSX";
+
+				using namespace OpenXLSX;
+
+				Timer t; t.start();
+				XLDocument doc;
+				doc.open(filepath);
+				auto ws = doc.workbook().worksheet(doc.workbook().worksheetNames()[0]);
+				t.end(); b.loadSecs = t.seconds();
+
+				size_t values = 0;
+
+				b.scanSecs = Measure([&]()
+					{
+						volatile size_t sink = 0;
+						for(auto& row : ws.rows())
+							for(auto& cell : row.cells())
+							{
+								try {
+									auto v = cell.value().get<std::string>();
+									sink += v.size();
+									values++;
+								}
+								catch(...) {}
+							}
+					});
+
+				doc.close();
+
+				b.ok = true;
+				b.valuesPerSec = values / safeTime(b.scanSecs);
+				b.mbPerSec = fileMB / safeTime(b.loadSecs + b.scanSecs);
+
+				return b;
+			}());
+
+		// xlnt
+		lines.push_back([&]()
+			{
+				BenchLine b; b.name = "xlnt";
+
+				Timer t; t.start();
+				xlnt::workbook wb;
+				wb.load(filepath);
+				auto ws = wb.active_sheet();
+				t.end(); b.loadSecs = t.seconds();
+
+				size_t values = 0;
+
+				b.scanSecs = Measure([&]()
+					{
+						volatile size_t sink = 0;
+						for(auto row : ws.rows(false))
+							for(auto cell : row)
+							{
+								try {
+									auto v = cell.to_string();
+									sink += v.size();
+									values++;
+								}
+								catch(...) {}
+							}
+					});
+
+				b.ok = true;
+				b.valuesPerSec = values / safeTime(b.scanSecs);
+				b.mbPerSec = fileMB / safeTime(b.loadSecs + b.scanSecs);
+
+				return b;
+			}());
+	}
+
+	// ================= SORT =================
+	ListView_DeleteAllItems(hListView);
+	g_bestTotal = -1.0;
+
+	int idx = 0;
+
+	for(const auto& b : lines)
+	{
+		double load = b.loadSecs;
+		double scan = b.scanSecs;
+		double total = load + scan;
+
+		std::wstring name(b.name.begin(), b.name.end());
+
+		LVITEMW item{};
+		item.mask = LVIF_TEXT | LVIF_PARAM;
+		item.iItem = idx;
+		item.iSubItem = 0;
+		item.pszText = const_cast<LPWSTR>(name.c_str());
+		item.lParam = idx;   // bitno za sort
+
+		int row = ListView_InsertItem(hListView, &item);
+
+		auto setDouble = [&](int col, double v, int prec = 4)
+			{
+				std::wstringstream ss;
+				ss << std::fixed << std::setprecision(prec) << v;
+				std::wstring tmp = ss.str();
+				ListView_SetItemText(hListView, row, col, const_cast<LPWSTR>(tmp.c_str()));
+			};
+
+		auto setUInt64 = [&](int col, uint64_t v)
+			{
+				std::wstringstream ss;
+				ss << v;
+				std::wstring tmp = ss.str();
+				ListView_SetItemText(hListView, row, col, const_cast<LPWSTR>(tmp.c_str()));
+			};
+
+		setDouble(1, load, 4);
+		setDouble(2, scan, 4);
+		setDouble(3, total, 4);
+		setDouble(4, b.mbPerSec, 1);
+		setUInt64(5, b.valuesPerSec);
+
+		idx++;
+	}
+
+	for(int i = 0; i < 6; ++i)
+		ListView_SetColumnWidth(hListView, i, LVSCW_AUTOSIZE_USEHEADER);
 }

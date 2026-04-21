@@ -41,10 +41,7 @@ public:
         CK_String = 1,
         CK_Number = 2,
         CK_Bool = 3,
-        CK_Date = 4,   // (rezervisano, kasnije)
-        CK_Formula = 5,
-        CK_Error = 6,
-        CK_Unknown = 7
+        CK_Date = 4
     };
 
     virtual ~TextFileParser() = default;
@@ -96,7 +93,10 @@ public:
 
 protected:
     void notifyLoaded();
-
+    void ensureStringCacheSize() const;
+    void ensureIntCacheSize() const;
+    void ensureDoubleCacheSize() const;
+    void ensureBoolCacheSize() const;
     static bool parseInt(std::string_view s, int& out);
     static bool parseDouble(std::string_view s, double& out);
     static bool parseBool(std::string_view s, bool& out, BoolFormat fmt);

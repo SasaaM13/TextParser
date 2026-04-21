@@ -82,23 +82,6 @@ int main()
     cout << "=== Large File Parsing Demo ===\n";
     cout << "Metodologija i alati za parsiranje velikih tekstualnih fajlova\n";
     cout << "------------------------------------------\n";
-    //cout << "Odaberi režim rada:\n";
-    //cout << "1 - Testiranje svih parsera (konzola)\n";
-    //cout << "2 - Otvori grafički interfejs (UI)\n";
-    //cout << "Izbor: ";
-
-    //int izbor = 0;
-    //cin >> izbor;
-
-    //if(izbor == 1)
-    //{
-    //    large_file_io::testCSV();
-    //    large_file_io::testJSON();
-    //    large_file_io::testXML();
-    //    large_file_io::testXLSX();
-    //    cout << "\nZavršeno testiranje svih formata.\n";
-    //}
-   // else if(izbor == 2)
     {
         //cout << "Pokrećem grafički interfejs...\n";
         HINSTANCE hInst = GetModuleHandle(nullptr);
