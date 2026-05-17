@@ -453,7 +453,7 @@ LRESULT CALLBACK TextParserUI::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
 		AddCol(2, L"Scan (s)", 100);
 		AddCol(3, L"Total (s)", 100);
 		AddCol(4, L"MB/s", 80);
-		AddCol(5, L"Values/s", 140);
+		//AddCol(5, L"Values/s", 140);
 		break;
 	}
 
@@ -515,7 +515,7 @@ LRESULT CALLBACK TextParserUI::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
 					for(int i = 0; i < count; ++i)
 					{
 						wchar_t buf[64]{};
-						ListView_GetItemText(hListView, i, 3, buf, 64); // Total kolona
+						ListView_GetItemText(hListView, i, 3, buf, 64);
 						double v = _wtof(buf);
 						if(v < g_bestTotal) g_bestTotal = v;
 					}
@@ -651,64 +651,6 @@ int TextParserUI::Run(HINSTANCE hInst, int nCmdShow)
 	}
 	return (int)msg.wParam;
 }
-// ======================================================================
-// PRINT FIRST 50 XML ELEMENTS (Custom / TinyXML2 / PugiXML)
-// ======================================================================
-
-// ----------------------------------------------------------------------------------
-// Custom ultra-fast XML (skimming only, zero overhead, no recursion, raw buffer scan)
-// ----------------------------------------------------------------------------------
-static void PrintFirst50_CustomXML(const std::string& path, int n)
-{
-	XMLParser xml(path);
-	if(!xml.load()) return;
-
-	RE_AppendLine(TextParserUI::hEditOutput, RGB(0, 180, 120), true,
-		"Custom XML (first 50 elements):");
-
-	Timer T;
-	T.start();
-
-	size_t total = xml.elementCount();
-	size_t limit = std::min<size_t>(n, total);
-
-	for(size_t i = 0; i < limit; i++)
-	{
-		auto opt = xml.getByIndex(i);
-		if(!opt.has_value()) continue;    // <-- fixed
-
-		const auto& node = opt.value();   // reference
-
-		// ==== Trim value ====
-		std::string val(node.text);       // convert view → string
-
-		auto trim = [&](std::string& s) {
-			size_t start = 0;
-			while(start < s.size() && isspace((unsigned char)s[start])) start++;
-
-			size_t end = s.size();
-			while(end > start && isspace((unsigned char)s[end - 1])) end--;
-
-			s = s.substr(start, end - start);
-			};
-		trim(val);
-
-		// Skip empty values
-		if(val.empty()) continue;
-
-		std::string line =
-			"[" + std::to_string(i) + "] <" + std::string(opt.value().tag) + "> = \"" + val + "\"";
-
-		RE_AppendLine(TextParserUI::hEditOutput, RGB(0, 140, 120), false, line);
-	}
-
-	double secs = T.seconds();
-	RE_AppendLine(TextParserUI::hEditOutput, RGB(80, 80, 80), false,
-		"⏱ CustomXML extract time = " + std::to_string(secs) + " s\n");
-}
-
-
-
 
 // --------------------------------------------
 // TinyXML2 – first 50 text-bearing elements
@@ -894,11 +836,454 @@ inline std::string fmtTime(double v)
 
 inline int getRepeat(double fileMB)
 {
-	if(fileMB < 0.1) return 200;
-	if(fileMB < 1.0) return 50;
-	if(fileMB < 5.0) return 10;
+	//if(fileMB < 0.1) return 200;
+	//if(fileMB < 1.0) return 50;
+	//if(fileMB < 5.0) return 10;
 	return 1;
 }
+#if TEST
+void testJSON(const JSONParser& j)
+{
+	JSONValue root(&j, j.rootIndex());
+	std::vector<std::string> strings;
+	std::vector<double> numbers;
+	std::vector<bool> bools;
+	std::vector<size_t> arraySizes;
+	std::vector<std::string>
+		keys;
+	// rekurzivni walk kroz DOM
+	// ==================================
+	// FULL DOM WALK
+	// ==================================
+	std::function<void(
+		JSONValue)> walk;
+
+	walk =
+		[&](JSONValue v)
+		{
+			if(!v.valid())
+				return;
+
+			if(v.isString())
+			{
+				strings.emplace_back(
+					v.asStringView());
+			}
+			else if(v.isNumber())
+			{
+				numbers.push_back(
+					v.asDouble());
+			}
+			else if(v.isBool())
+			{
+				bools.push_back(
+					v.asBool());
+			}
+			else if(v.isArray())
+			{
+				arraySizes.push_back(
+					v.size());
+
+				for(size_t i = 0;
+					i < v.size();
+					++i)
+				{
+					walk(v[i]);
+				}
+			}
+			else if(v.isObject())
+			{
+				const auto& node =
+					j.nodes()
+					[v.index()];
+
+				for(size_t i = 0;
+					i < v.size();
+					++i)
+				{
+					const auto& kv =
+						j.membersArena()
+						[node.a +
+						(uint32_t)i];
+
+					// =====================
+					// KEY NAME
+					// =====================
+					keys.emplace_back(
+						kv.first);
+
+					auto childIdx =
+						kv.second;
+
+					walk(
+						JSONValue(
+							&j,
+							childIdx));
+				}
+			}
+		};
+
+	walk(root);
+
+	std::vector<std::string> directStrings;
+    std::vector<double> directNumbers;
+    std::vector<bool> directBools;
+
+    // json["users"]
+    auto users = root["users"];
+	if(!users.valid())
+		return;
+    if(users.isArray())
+    {
+        arraySizes.push_back(users.size()); // dodatno bilježenje
+
+        for(size_t i = 0; i < users.size(); ++i)
+        {
+            auto user = users[i];
+
+            // json["users"][i]["name"]
+            auto name = user["name"];
+            if(name.isString())
+                directStrings.emplace_back(name.asStringView());
+
+            // id
+            auto id = user["id"];
+            if(id.isNumber())
+                directNumbers.push_back(id.asDouble());
+
+            // active
+            auto active = user["active"];
+            if(active.isBool())
+                directBools.push_back(active.asBool());
+
+            // scores array
+            auto scores = user["scores"];
+            if(scores.isArray())
+            {
+                arraySizes.push_back(scores.size());
+
+                for(size_t j2 = 0; j2 < scores.size(); ++j2)
+                {
+                    auto sc = scores[j2];
+                    if(sc.isNumber())
+                        directNumbers.push_back(sc.asDouble());
+                }
+            }
+        }
+    }
+
+}
+
+#if TEST
+void testXML(const XMLParser& x)
+{
+	auto root = x.rootValue();
+
+	if(!root.valid())
+		return;
+
+	std::vector<std::string> texts;
+	std::vector<std::string> names;
+	std::vector<size_t> childCounts;
+
+	// ==================================
+	// FULL TREE WALK TEST
+	// ==================================
+	auto walk = [&](auto&& self,
+		XMLValue v) -> void
+		{
+			if(!v.valid())
+				return;
+
+			auto n = v.name();
+
+			if(!n.empty())
+				names.emplace_back(n);
+
+			if(v.isText())
+			{
+				auto txt = v.text();
+
+				if(!txt.empty())
+					texts.emplace_back(txt);
+			}
+
+			size_t childCount = 0;
+
+			for(auto c = v.firstChild();
+				c.valid();
+				c = c.nextSibling())
+			{
+				++childCount;
+				self(self, c);
+			}
+
+			childCounts.push_back(childCount);
+		};
+
+	walk(walk, root);
+
+	// ==================================
+	// DIRECT ACCESS TEST
+	// ==================================
+
+	std::vector<std::string> userNames;
+	std::vector<int> ids;
+	std::vector<bool> actives;
+	std::vector<double> salaries;
+	std::vector<Date> birthDates;
+	std::vector<int> scores;
+
+	auto doc = x.rootValue();
+
+	auto r =
+		doc.child("root");
+
+	auto users =
+		r.child("users");
+
+	if(users.valid())
+	{
+		for(auto user :
+			users.children("user"))
+		{
+			// -----------------------
+			// name
+			// -----------------------
+			auto name =
+				user.childText("name");
+
+			if(!name.empty())
+			{
+				userNames.emplace_back(
+					name);
+			}
+
+			// -----------------------
+			// id
+			// -----------------------
+			auto idNode =
+				user.child("id")
+				.firstChild();
+
+			if(auto v =
+				idNode.toInt())
+			{
+				ids.push_back(*v);
+			}
+
+			// -----------------------
+			// active
+			// -----------------------
+			auto activeNode =
+				user.child("active")
+				.firstChild();
+
+			if(auto v =
+				activeNode.toBool())
+			{
+				actives.push_back(*v);
+			}
+
+			// -----------------------
+			// salary
+			// -----------------------
+			auto salaryNode =
+				user.child("salary")
+				.firstChild();
+
+			if(auto v =
+				salaryNode.toDouble())
+			{
+				salaries.push_back(*v);
+			}
+
+			// -----------------------
+			// birthDate
+			// -----------------------
+			auto birthNode =
+				user.child("birthDate")
+				.firstChild();
+
+			if(auto d =
+				birthNode.toDate())
+			{
+				birthDates.push_back(*d);
+			}
+
+			// -----------------------
+			// scores
+			// -----------------------
+			auto scoresNode =
+				user.child("scores");
+
+			for(auto score :
+				scoresNode.children(
+					"score"))
+			{
+				auto txt =
+					score.firstChild();
+
+				if(auto s =
+					txt.toInt())
+				{
+					scores.push_back(*s);
+				}
+			}
+		}
+	}
+
+	// ==================================
+	// FAST RAW NODE TEST
+	// ==================================
+
+	size_t fastTextCount = 0;
+	size_t fastTextBytes = 0;
+	size_t fastElementCount = 0;
+
+	for(const auto& n :
+		x.nodesP())
+	{
+		if(n.name)
+			++fastElementCount;
+
+		if(n.text)
+		{
+			++fastTextCount;
+			fastTextBytes +=
+				n.textLen;
+		}
+	}
+
+#ifdef DEBUG_XML
+	std::cout
+		<< "\n========== XML TEST ==========\n";
+
+	std::cout
+		<< "ElementCount: "
+		<< x.elementCount()
+		<< "\n";
+
+	std::cout
+		<< "Names: "
+		<< names.size()
+		<< "\n";
+
+	std::cout
+		<< "Texts: "
+		<< texts.size()
+		<< "\n";
+
+	std::cout
+		<< "FastElementCount: "
+		<< fastElementCount
+		<< "\n";
+
+	std::cout
+		<< "FastTextCount: "
+		<< fastTextCount
+		<< "\n";
+
+	std::cout
+		<< "FastTextBytes: "
+		<< fastTextBytes
+		<< "\n";
+
+	std::cout
+		<< "\n========== USERS ==========\n";
+
+	std::cout
+		<< "Users: "
+		<< userNames.size()
+		<< "\n";
+
+	for(size_t i = 0;
+		i < userNames.size();
+		++i)
+	{
+		std::cout
+			<< "[" << i << "] ";
+
+		if(i < ids.size())
+			std::cout
+			<< "id="
+			<< ids[i]
+			<< " ";
+
+		std::cout
+			<< "name="
+			<< userNames[i]
+			<< " ";
+
+		if(i < actives.size())
+		{
+			std::cout
+				<< "active="
+				<< actives[i]
+				<< " ";
+		}
+
+		if(i < salaries.size())
+		{
+			std::cout
+				<< "salary="
+				<< salaries[i]
+				<< " ";
+		}
+
+		if(i < birthDates.size())
+		{
+			const auto& d =
+				birthDates[i];
+
+			std::cout
+				<< "birth="
+				<< d.day
+				<< "."
+				<< d.month
+				<< "."
+				<< d.year;
+		}
+
+		std::cout << "\n";
+	}
+
+	std::cout
+		<< "\n========== SCORES ==========\n";
+
+	for(size_t i = 0;
+		i < scores.size();
+		++i)
+	{
+		std::cout
+			<< scores[i]
+			<< " ";
+	}
+
+	std::cout << "\n";
+
+	std::cout
+		<< "\n========== FIRST TEXTS ==========\n";
+
+	for(size_t i = 0;
+		i < std::min<size_t>(
+			texts.size(), 10);
+		++i)
+	{
+		std::cout
+			<< "[" << i
+			<< "] "
+			<< texts[i]
+			<< "\n";
+	}
+
+	std::cout
+		<< "==============================\n";
+#endif
+}
+#endif
+#endif
+
 
 
 // ================= MAIN =================
@@ -946,7 +1331,45 @@ void TextParserUI::ParseFile(const std::string& filepath)
 				size_t r = csv.rowCount();
 				size_t c = csv.colCount();
 				size_t values = r * c;
-
+#if TEST
+				std::vector<string_view> aStr;
+				std::vector<TextFileParser::CellKind> aCellKind;
+				std::vector<double> aDbl;
+				std::vector<bool> aBool;
+				std::vector<string_view> aStrSingle;
+				std::vector<Date> aDate;
+				auto names = csv.getColNames();
+				for(int i = 0; i < r; ++i)
+				{
+					for(int j = 0; j < c; ++j)
+					{
+						std::string_view str = csv.valueView(i, j);
+						aStr.push_back(csv.valueView(i, j));
+						auto cellKind = csv.cellKind(i, j);
+						aCellKind.push_back(csv.cellKind(i, j));
+						if(cellKind == TextFileParser::CellKind::CK_Date)
+						{
+							Date date;
+							parseDate(str, date);
+							aDate.push_back(date);
+						}
+						else if(cellKind == TextFileParser::CellKind::CK_Number)
+						{
+							aDbl.push_back(csv.toDouble(i, j).value());
+						}
+						else if(cellKind == TextFileParser::CellKind::CK_String)
+						{
+							aStrSingle.push_back(str);
+						}
+						else if(cellKind == TextFileParser::CellKind::CK_Bool)
+						{
+							aBool.push_back(csv.toBool(i, j).value());
+						}
+					}
+					if(aStr.size() >= 50)
+						break;
+				}
+#endif
 				b.scanSecs = Measure([&]()
 					{
 						volatile size_t sink = 0;
@@ -1031,24 +1454,76 @@ void TextParserUI::ParseFile(const std::string& filepath)
 	{
 		lines.push_back([&]()
 			{
-				BenchLine b; b.name = "Custom JSON";
+				BenchLine b;
+				b.name = "Custom JSON";
 
 				JSONParser j(filepath);
 
-				Timer t; t.start();
+				Timer t;
+				t.start();
 				b.ok = j.load();
-				t.end(); b.loadSecs = t.seconds();
-				if(!b.ok) return b;
+				t.end();
 
-				size_t values = j.rowCount() * j.totalFields();
+				b.loadSecs = t.seconds();
 
+				if(!b.ok)
+					return b;
+
+				const auto& nodes = j.nodes();
+
+				// =========================
+				// COUNT VALUES
+				// =========================
+				size_t values = 0;
+
+				for(size_t i = 0; i < nodes.size(); ++i)
+				{
+					JSONValue v(&j, i);
+
+					if(v.isString() ||
+						v.isNumber() ||
+						v.isBool() ||
+						v.isNull())
+					{
+						++values;
+					}
+				}
+
+#if TEST
+				testJSON(j);
+#endif
+
+				// =========================
+				// SCAN
+				// =========================
 				b.scanSecs = Measure([&]()
 					{
 						volatile size_t sink = 0;
+
 						for(int rep = 0; rep < repeat; ++rep)
-							for(size_t i = 0; i < j.rowCount(); ++i)
-								for(size_t k = 0; k < j.colCount(); ++k)
-									sink += j.valueView(i, k).size();
+						{
+							for(size_t i = 0; i < nodes.size(); ++i)
+							{
+								JSONValue v(&j, i);
+
+								if(v.isString())
+								{
+									sink += v.asStringView().size();
+								}
+								else if(v.isNumber())
+								{
+									sink += (size_t)v.asDouble();
+								}
+								else if(v.isBool())
+								{
+									sink += v.asBool();
+								}
+								else if(v.isNull())
+								{
+									sink += 1;
+								}
+							}
+						}
 					}) / repeat;
 
 				b.valuesPerSec = values / safeTime(b.scanSecs);
@@ -1059,32 +1534,95 @@ void TextParserUI::ParseFile(const std::string& filepath)
 
 		lines.push_back([&]()
 			{
-				BenchLine b; b.name = "RapidJSON";
+				BenchLine b;
+				b.name = "RapidJSON";
 
 				rapidjson::Document doc;
 
-				Timer t; t.start();
+				Timer t;
+				t.start();
 				doc.Parse(fileContent.c_str());
-				t.end(); b.loadSecs = t.seconds();
-				if(doc.HasParseError()) return b;
+				t.end();
 
+				b.loadSecs = t.seconds();
+
+				if(doc.HasParseError())
+					return b;
+
+				// =========================
+				// COUNT
+				// =========================
 				size_t values = 0;
-				std::function<void(const rapidjson::Value&)> walk;
 
-				walk = [&](const rapidjson::Value& v)
+				std::function<void(const rapidjson::Value&)> countWalk;
+
+				countWalk = [&](const rapidjson::Value& v)
 					{
-						if(v.IsString()) { values++; }
-						else if(v.IsArray()) for(auto& x : v.GetArray()) walk(x);
-						else if(v.IsObject()) for(auto& m : v.GetObject()) walk(m.value);
+						if(v.IsString() ||
+							v.IsNumber() ||
+							v.IsBool() ||
+							v.IsNull())
+						{
+							++values;
+							return;
+						}
+
+						if(v.IsArray())
+						{
+							for(auto& x : v.GetArray())
+								countWalk(x);
+						}
+						else if(v.IsObject())
+						{
+							for(auto& m : v.GetObject())
+								countWalk(m.value);
+						}
 					};
 
-				walk(doc);
+				countWalk(doc);
 
+				// =========================
+				// SCAN
+				// =========================
 				b.scanSecs = Measure([&]()
 					{
 						volatile size_t sink = 0;
+
+						std::function<void(const rapidjson::Value&)> scanWalk;
+
+						scanWalk = [&](const rapidjson::Value& v)
+							{
+								if(v.IsString())
+								{
+									sink += v.GetStringLength();
+								}
+								else if(v.IsNumber())
+								{
+									sink += (size_t)v.GetDouble();
+								}
+								else if(v.IsBool())
+								{
+									sink += v.GetBool();
+								}
+								else if(v.IsNull())
+								{
+									sink += 1;
+								}
+								else if(v.IsArray())
+								{
+									for(auto& x : v.GetArray())
+										scanWalk(x);
+								}
+								else if(v.IsObject())
+								{
+									for(auto& m : v.GetObject())
+										scanWalk(m.value);
+								}
+							};
+
 						for(int rep = 0; rep < repeat; ++rep)
-							walk(doc);
+							scanWalk(doc);
+
 					}) / repeat;
 
 				b.ok = true;
@@ -1095,32 +1633,102 @@ void TextParserUI::ParseFile(const std::string& filepath)
 			}());
 		lines.push_back([&]()
 			{
-				BenchLine b; b.name = "nlohmann/json";
+				BenchLine b;
+				b.name = "nlohmann/json";
 
-				Timer t; t.start();
-				nlohmann::json j = nlohmann::json::parse(fileContent);
-				t.end(); b.loadSecs = t.seconds();
+				Timer t;
+				t.start();
 
+				nlohmann::json j =
+					nlohmann::json::parse(fileContent);
+
+				t.end();
+
+				b.loadSecs = t.seconds();
+
+				// =========================
+				// COUNT
+				// =========================
 				size_t values = 0;
 
-				std::function<void(const nlohmann::json&)> walk;
-				walk = [&](const nlohmann::json& v)
-					{
-						if(v.is_string()) values++;
-						else if(v.is_array()) for(auto& x : v) walk(x);
-						else if(v.is_object()) for(auto& x : v.items()) walk(x.value());
-					};
-				walk(j);
+				std::function<void(const nlohmann::json&)> countWalk;
 
+				countWalk = [&](const nlohmann::json& v)
+					{
+						if(v.is_string() ||
+							v.is_number() ||
+							v.is_boolean() ||
+							v.is_null())
+						{
+							++values;
+							return;
+						}
+
+						if(v.is_array())
+						{
+							for(const auto& x : v)
+								countWalk(x);
+						}
+						else if(v.is_object())
+						{
+							for(auto& x : v.items())
+								countWalk(x.value());
+						}
+					};
+
+				countWalk(j);
+
+				// =========================
+				// SCAN
+				// =========================
 				b.scanSecs = Measure([&]()
 					{
+						volatile size_t sink = 0;
+
+						std::function<void(const nlohmann::json&)> scanWalk;
+
+						scanWalk = [&](const nlohmann::json& v)
+							{
+								if(v.is_string())
+								{
+									sink +=
+										v.get_ref<const std::string&>().size();
+								}
+								else if(v.is_number())
+								{
+									sink += (size_t)v.get<double>();
+								}
+								else if(v.is_boolean())
+								{
+									sink += v.get<bool>();
+								}
+								else if(v.is_null())
+								{
+									sink += 1;
+								}
+								else if(v.is_array())
+								{
+									for(const auto& x : v)
+										scanWalk(x);
+								}
+								else if(v.is_object())
+								{
+									for(auto& x : v.items())
+										scanWalk(x.value());
+								}
+							};
+
 						for(int rep = 0; rep < repeat; ++rep)
-							walk(j);
+							scanWalk(j);
+
 					}) / repeat;
 
 				b.ok = true;
-				b.valuesPerSec = values / safeTime(b.scanSecs);
-				b.mbPerSec = fileMB / safeTime(b.loadSecs + b.scanSecs);
+				b.valuesPerSec =
+					values / safeTime(b.scanSecs);
+
+				b.mbPerSec =
+					fileMB / safeTime(b.loadSecs + b.scanSecs);
 
 				return b;
 			}());
@@ -1134,26 +1742,54 @@ void TextParserUI::ParseFile(const std::string& filepath)
 			{
 				BenchLine b; b.name = "Custom XML";
 
-				XMLParser x(filepath);
+				XMLParser::Options opt;
+				opt.usePointerDom = true;   
 
-				Timer t; t.start();
+				XMLParser x(filepath, opt);
+
+				Timer t;
+				t.start();
 				b.ok = x.load();
-				t.end(); b.loadSecs = t.seconds();
+				t.end();
+
+				b.loadSecs = t.seconds();
+#if TEST
+				testXML(x);
+#endif
 				if(!b.ok) return b;
 
-				size_t values = x.textNodeCount();
+				// =========================
+				// COUNT TEXT VALUES (FAST)
+				// =========================
+				size_t values = 0;
 
+				const auto& nodes = x.nodesP();
+
+				for(const auto& n : nodes)
+				{
+					if(n.text) ++values;
+				}
+
+				// =========================
+				// SCAN (MAX SPEED)
+				// =========================
 				b.scanSecs = Measure([&]()
 					{
 						volatile size_t sink = 0;
+
 						for(int rep = 0; rep < repeat; ++rep)
-							for(size_t i = 0; i < values; ++i)
+						{
+							for(const auto& n : nodes)
 							{
-								auto v = x.getByIndex(i);
-								if(v) sink += v->text.size();
+								if(n.text)
+									sink += n.textLen;
 							}
+						}
 					}) / repeat;
 
+				// =========================
+				// METRICS
+				// =========================
 				b.valuesPerSec = values / safeTime(b.scanSecs);
 				b.mbPerSec = fileMB / safeTime(b.loadSecs + b.scanSecs);
 
@@ -1286,7 +1922,43 @@ void TextParserUI::ParseFile(const std::string& filepath)
 				size_t r = x.rowCount();
 				size_t c = x.colCount();
 				size_t values = r * c;
-
+#if TEST
+				std::vector<string_view> aStr;
+				std::vector<TextFileParser::CellKind> aCellKind;
+				std::vector<double> aDbl;
+				std::vector<bool> aBool;
+				std::vector<string_view> aStrSingle;
+				std::vector<Date> aDate;
+				auto names = x.getColNames();
+				for(int i = 0; i < r; ++i)
+				{
+					for(int j = 0; j < c; ++j)
+					{
+						std::string_view str = x.valueView(i, j);
+						aStr.push_back(x.valueView(i, j));
+						auto cellKind = x.cellKind(i, j);
+						aCellKind.push_back(x.cellKind(i, j));
+						if(cellKind == TextFileParser::CellKind::CK_Date)
+						{
+							Date date;
+							parseDate(str, date);
+							aDate.push_back(date);
+						}
+						else if(cellKind == TextFileParser::CellKind::CK_Number)
+						{
+							aDbl.push_back(x.toDouble(i, j).value());
+						}
+						else if(cellKind == TextFileParser::CellKind::CK_String)
+						{
+							aStrSingle.push_back(str);
+						}
+						else if(cellKind == TextFileParser::CellKind::CK_Bool)
+						{
+							aBool.push_back(x.toBool(i, j).value());
+						}
+					}
+				}
+#endif
 				b.scanSecs = Measure([&]()
 					{
 						volatile size_t sink = 0;
@@ -1305,38 +1977,177 @@ void TextParserUI::ParseFile(const std::string& filepath)
 		// OpenXLSX
 		lines.push_back([&]()
 			{
-				BenchLine b; b.name = "OpenXLSX";
+				BenchLine b;
+				b.name =
+					"OpenXLSX";
 
-				using namespace OpenXLSX;
+				using namespace
+					OpenXLSX;
 
-				Timer t; t.start();
+				Timer t;
+				t.start();
+
 				XLDocument doc;
-				doc.open(filepath);
-				auto ws = doc.workbook().worksheet(doc.workbook().worksheetNames()[0]);
-				t.end(); b.loadSecs = t.seconds();
+				doc.open(
+					filepath);
 
-				size_t values = 0;
+				auto ws =
+					doc.workbook()
+					.worksheet(
+						doc.workbook()
+						.worksheetNames()[0]);
 
-				b.scanSecs = Measure([&]()
+				t.end();
+
+				b.loadSecs =
+					t.seconds();
+
+				// ==========================
+				// COUNT
+				// ==========================
+				size_t values =
+					0;
+
+				for(auto& row :
+					ws.rows())
+				{
+					for(auto& cell :
+						row.cells())
 					{
-						volatile size_t sink = 0;
-						for(auto& row : ws.rows())
-							for(auto& cell : row.cells())
+						try
+						{
+							if(cell.empty())
+								continue;
+
+							auto& value = cell.value();
+
+							switch(value.type())
 							{
-								try {
-									auto v = cell.value().get<std::string>();
-									sink += v.size();
-									values++;
+							case XLValueType::String:
+							{
+								auto s =
+									cell
+									.value()
+									.get<
+									std::string>();
+
+								if(!s.empty())
+								{
+									++values;
 								}
-								catch(...) {}
+								break;
 							}
-					});
+
+							case XLValueType::Integer:
+							case XLValueType::Float:
+							case XLValueType::Boolean:
+							{
+								++values;
+								break;
+							}
+
+							default:
+								break;
+							}
+						}
+						catch(...)
+						{
+						}
+					}
+				}
+
+				// ==========================
+				// SCAN
+				// ==========================
+				b.scanSecs =
+					Measure([&]()
+						{
+							volatile
+								size_t sink =
+								0;
+
+							for(int rep = 0;
+								rep < repeat;
+								++rep)
+							{
+								for(auto& row :
+									ws.rows())
+								{
+									for(auto& cell :
+										row.cells())
+									{
+										try
+										{
+											if(cell.empty())
+												continue;
+
+											auto& value = cell.value();
+
+											switch(value.type())
+											{
+											case XLValueType::String:
+											{
+												auto s =
+													cell
+													.value()
+													.get<
+													std::string>();
+
+												sink +=
+													s.size();
+
+												break;
+											}
+
+											case XLValueType::Integer:
+											{
+												sink +=
+													8;
+												break;
+											}
+
+											case XLValueType::Float:
+											{
+												sink +=
+													8;
+												break;
+											}
+
+											case XLValueType::Boolean:
+											{
+												sink +=
+													1;
+												break;
+											}
+
+											default:
+												break;
+											}
+										}
+										catch(...)
+										{
+										}
+									}
+								}
+							}
+						})
+					/ repeat;
 
 				doc.close();
 
-				b.ok = true;
-				b.valuesPerSec = values / safeTime(b.scanSecs);
-				b.mbPerSec = fileMB / safeTime(b.loadSecs + b.scanSecs);
+				b.ok =
+					true;
+
+				b.valuesPerSec =
+					values /
+					safeTime(
+						b.scanSecs);
+
+				b.mbPerSec =
+					fileMB /
+					safeTime(
+						b.loadSecs +
+						b.scanSecs);
 
 				return b;
 			}());
@@ -1344,34 +2155,72 @@ void TextParserUI::ParseFile(const std::string& filepath)
 		// xlnt
 		lines.push_back([&]()
 			{
-				BenchLine b; b.name = "xlnt";
+				BenchLine b;
+				b.name = "xlnt";
 
-				Timer t; t.start();
+				Timer t;
+				t.start();
+
 				xlnt::workbook wb;
 				wb.load(filepath);
-				auto ws = wb.active_sheet();
-				t.end(); b.loadSecs = t.seconds();
 
+				auto ws = wb.active_sheet();
+
+				t.end();
+
+				b.loadSecs = t.seconds();
+
+				// COUNT
 				size_t values = 0;
 
+				for(auto row : ws.rows(false))
+				{
+					for(auto cell : row)
+					{
+						try
+						{
+							auto v = cell.to_string();
+
+							if(!v.empty())
+								++values;
+						}
+						catch(...)
+						{
+						}
+					}
+				}
+
+				// SCAN
 				b.scanSecs = Measure([&]()
 					{
 						volatile size_t sink = 0;
-						for(auto row : ws.rows(false))
-							for(auto cell : row)
+
+						for(int rep = 0; rep < repeat; ++rep)
+						{
+							for(auto row : ws.rows(false))
 							{
-								try {
-									auto v = cell.to_string();
-									sink += v.size();
-									values++;
+								for(auto cell : row)
+								{
+									try
+									{
+										auto v = cell.to_string();
+										sink += v.size();
+									}
+									catch(...)
+									{
+									}
 								}
-								catch(...) {}
 							}
-					});
+						}
+					}) / repeat;
 
 				b.ok = true;
-				b.valuesPerSec = values / safeTime(b.scanSecs);
-				b.mbPerSec = fileMB / safeTime(b.loadSecs + b.scanSecs);
+
+				b.valuesPerSec =
+					values / safeTime(b.scanSecs);
+
+				b.mbPerSec =
+					fileMB / safeTime(b.loadSecs + b.scanSecs);
 
 				return b;
 			}());
@@ -1408,19 +2257,19 @@ void TextParserUI::ParseFile(const std::string& filepath)
 				ListView_SetItemText(hListView, row, col, const_cast<LPWSTR>(tmp.c_str()));
 			};
 
-		auto setUInt64 = [&](int col, uint64_t v)
+	/*	auto setUInt64 = [&](int col, uint64_t v)
 			{
 				std::wstringstream ss;
 				ss << v;
 				std::wstring tmp = ss.str();
 				ListView_SetItemText(hListView, row, col, const_cast<LPWSTR>(tmp.c_str()));
-			};
+			};*/
 
 		setDouble(1, load, 4);
 		setDouble(2, scan, 4);
 		setDouble(3, total, 4);
-		setDouble(4, b.mbPerSec, 1);
-		setUInt64(5, b.valuesPerSec);
+		setDouble(4, b.mbPerSec, 3);
+		//setUInt64(5, b.valuesPerSec);
 
 		idx++;
 	}

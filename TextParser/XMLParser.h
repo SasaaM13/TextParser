@@ -1,72 +1,260 @@
 ﻿#pragma once
 #include "TextFileParser.h"
-#include <string>
-#include <vector>
-#include <cstddef>
-#include <cstdint>
-#include <immintrin.h>
-#include <unordered_map>
 
-struct XMLValue {
-    std::string_view tag;
-    std::string_view text;
+#include <string>
+#include <string_view>
+#include <vector>
+#include <unordered_map>
+#include <cstdint>
+#include <filesystem>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+#include "DateParser.h"
+
+// ===================================================
+// Node types
+// ===================================================
+
+enum class XMLNodeType : uint32_t
+{
+    Element,
+    Text
 };
-class XMLParser : public TextFileParser
+
+// ===================================================
+// Standard node (fallback DOM)
+// ===================================================
+
+struct XMLNode
+{
+    uint32_t type = 0;
+
+    std::string_view name{};
+    std::string_view text{};
+
+    uint32_t parent = UINT32_MAX;
+    uint32_t firstChild = UINT32_MAX;
+    uint32_t nextSibling = UINT32_MAX;
+};
+
+// ===================================================
+// POINTER NODE (turbo mode)
+// ===================================================
+
+struct XMLNodeP
+{
+    uint32_t parent = UINT32_MAX;
+    uint32_t firstChild = UINT32_MAX;
+    uint32_t nextSibling = UINT32_MAX;
+    uint32_t lastChild = UINT32_MAX;
+
+    const char* name = nullptr;
+    uint32_t nameLen = 0;
+
+    const char* text = nullptr;
+    uint32_t textLen = 0;
+};
+
+class XMLParser;
+
+// ===================================================
+// XMLValue wrapper
+// ===================================================
+
+class XMLValue
 {
 public:
-    static constexpr std::size_t npos = (std::size_t)-1;
+    XMLValue() = default;
+    XMLValue(const XMLParser* p, uint32_t i) : owner_(p), idx_(i) {}
 
-    XMLParser(std::string path = "");
-    void setBuffer(const char* data, std::size_t size);
+    bool valid() const;
+
+    bool isElement() const;
+    bool isText() const;
+
+    std::string_view name() const;
+    std::string_view text() const;
+
+    XMLValue firstChild() const;
+    XMLValue nextSibling() const;
+    XMLValue child(std::string_view name) const;
+    std::string_view childText(
+        std::string_view name) const;
+    std::optional<int> toInt() const;
+    std::optional<double> toDouble() const;
+    std::optional<bool> toBool() const;
+    std::optional<Date> toDate() const;
+    std::vector<XMLValue> children(std::string_view name) const;
+private:
+    const XMLParser* owner_ = nullptr;
+    uint32_t idx_ = UINT32_MAX;
+};
+
+// ===================================================
+// Parser
+// ===================================================
+
+class XMLParser final : public TextFileParser
+{
+public:
+    struct Options
+    {
+        bool usePointerDom = true; 
+    };
+
+    explicit XMLParser(std::string path = "", Options opt = {});
+    ~XMLParser() { unmapFile(); }
 
     bool load() override;
 
-    std::size_t elementCount() const noexcept { return elementCount_; }
-    std::size_t textNodeCount() const noexcept { return textNodeCount_; }
-    const std::string& value(size_t row, size_t col) const override 
+    XMLValue rootValue() const { return XMLValue(this, rootIndex_); }
+
+    // stats
+    size_t elementCount() const { return elementCount_; }
+
+    const std::string& value(size_t, size_t) const override
     {
         static const std::string empty;
         return empty;
-    };
-    std::optional<XMLValue> getByIndex(size_t index) const;
-    std::vector<XMLValue> getByName(std::string_view name) const;
-
-    std::optional<std::string_view> findFirst(std::string_view tag) const;
-    std::vector<std::string_view> findAll(std::string_view tag) const;
-    std::optional<std::string_view> getValueAtIndex(size_t index) const;
-
-    const char* rawData() const { return data_; }
-    const char* rawEnd()  const { return end_; }
+    }
+    const std::vector<XMLNodeP>& nodesP() const { return nodesP_; }
 private:
-    // Core parsing
-    void parseFast();
-
-    // Helpers
-    static bool isAllWhitespace(const char* s, std::size_t len);
-    std::size_t findSeq(std::size_t from, std::string_view seq) const;
-    std::size_t findNextLT(std::size_t pos) const;
-
-    // Whitespace skipper
-    inline void skipWS(std::size_t& pos)
+    bool usingPointerDom() const { return opt_.usePointerDom; }
+    size_t textNodeCountFast() const
     {
-        while(pos < size_ &&
-            (data_[pos] == ' ' ||
-                data_[pos] == '\t' ||
-                data_[pos] == '\n' ||
-                data_[pos] == '\r'))
-            ++pos;
+        if(opt_.usePointerDom)
+        {
+            size_t c = 0;
+            for(const auto& n : nodesP_)
+                if(n.text) ++c;
+            return c;
+        }
+        else
+        {
+            size_t c = 0;
+            for(const auto& n : nodes_)
+                if(n.type == (uint32_t)XMLNodeType::Text)
+                    ++c;
+            return c;
+        }
+    }
+    size_t scanTextSizeFast() const
+    {
+        size_t total = 0;
+
+        if(opt_.usePointerDom)
+        {
+            for(const auto& n : nodesP_)
+            {
+                if(n.text)
+                {
+                    const char* p = n.text;
+                    while(*p++) ++total;
+                }
+            }
+        }
+        else
+        {
+            for(const auto& n : nodes_)
+            {
+                if(n.type == (uint32_t)XMLNodeType::Text)
+                    total += n.text.size();
+            }
+        }
+
+        return total;
+    }
+    bool mapFile();
+    void unmapFile();
+    void reset();
+
+    bool parseDOMPointer();   // 🔥 fast
+    bool parseDOM();          // fallback
+
+    //size_t findNextLT(size_t pos) const;
+    size_t findSeq(size_t from, std::string_view seq) const;
+
+    // pointer arena
+    //XMLNodeP* appendNodeP(XMLNodeP n);
+    //void appendChildP(XMLNodeP* p, XMLNodeP* c);
+    inline uint32_t appendNodeP(
+        const XMLNodeP& n)
+    {
+        nodesP_.push_back(n);
+
+        return
+            (uint32_t)
+            (nodesP_.size() - 1);
+    }
+
+    inline void appendChildP(
+        uint32_t parent,
+        uint32_t child)
+    {
+        auto& p =
+            nodesP_[parent];
+
+        if(p.firstChild ==
+            UINT32_MAX)
+        {
+            p.firstChild =
+                child;
+        }
+        else
+        {
+            nodesP_[p.lastChild]
+                .nextSibling =
+                child;
+        }
+
+        p.lastChild =
+            child;
+    }
+
+    inline size_t findNextLT(size_t pos) const
+    {
+        const void* hit =
+            std::memchr(data_ + pos, '<', size_ - pos);
+
+        if(!hit)
+            return size_t(-1);
+
+        return (const char*)hit - data_;
     }
 
 private:
     std::string path_;
-    std::vector<char> buffer_;
-    const char* data_ = nullptr;
+    Options opt_;
+
+    char* data_ = nullptr;
+    char* base_ = nullptr;
     const char* end_ = nullptr;
-    std::size_t size_ = 0;
+    size_t size_ = 0;
 
-    std::size_t elementCount_ = 0;
-    std::size_t textNodeCount_ = 0;
+#ifdef _WIN32
+    HANDLE hFile_ = INVALID_HANDLE_VALUE;
+    HANDLE hMap_ = nullptr;
+#else
+    int fd_ = -1;
+#endif
 
-    std::vector<std::pair<std::string_view, std::string_view>> values_; // tag→text
-    std::unordered_map<std::string_view, std::vector<size_t>> indexByName_;
+    // pointer DOM
+    std::vector<XMLNodeP> nodesP_;
+
+    // fallback DOM
+    std::vector<XMLNode> nodes_;
+
+    uint32_t rootIndex_ = 0;
+
+    size_t elementCount_ = 0;
+    friend class XMLValue;
 };

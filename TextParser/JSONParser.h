@@ -19,6 +19,60 @@
 #include <fcntl.h>
 #include <unistd.h>
 #endif
+class JSONParser;
+
+enum class JSONType
+{
+    Null,
+    Bool,
+    Number,
+    String,
+    Array,
+    Object
+};
+
+struct JSONNode
+{
+    uint32_t type;
+
+    uint32_t a; // index / start
+    uint32_t b; // count / end
+
+    std::string_view str; // samo za string
+    std::string_view raw; // za broj
+
+    double num;
+    bool boolVal;
+};
+
+class JSONValue
+{
+public:
+    JSONValue() = default;
+    JSONValue(const JSONParser* o, size_t i) : owner(o), idx(i) {}
+
+    bool valid() const { return owner && idx != SIZE_MAX; }
+
+    bool isNull() const;
+    bool isBool() const;
+    bool isNumber() const;
+    bool isString() const;
+    bool isArray() const;
+    bool isObject() const;
+
+    bool asBool() const;
+    double asDouble() const;
+    std::string_view asStringView() const;
+
+    size_t size() const;
+    size_t index() const { return idx; }
+    JSONValue operator[](size_t i) const;
+    JSONValue operator[](std::string_view key) const;
+
+private:
+    const JSONParser* owner = nullptr;
+    size_t idx = SIZE_MAX;
+};
 
 class JSONParser final : public TextFileParser {
 public:
@@ -46,18 +100,28 @@ public:
         if(r >= rows_ || c >= cols_) return {};
         return dataViews_[r * cols_ + c];
     }
+    JSONValue rootValue() const { return JSONValue(this, rootIndex_); }
     size_t totalFields() const { return totalFields_; }
     // kompatibilnost: lenjo pravi std::string u base cacheString_
     const std::string& value(size_t r, size_t c) const override;
 
     // hierarchy (fallback)
-    const DataNode& root() const override { return root_; }
-
+    const DataNode& root() const override { return root_; };
+    const std::vector<JSONNode>& nodes() const {return nodes_;};
+    size_t rootIndex() const { return rootIndex_; }
+    const std::vector<uint32_t>& childrenArena() const { return arenaChildren; }
+    const std::vector<std::pair<std::string_view, uint32_t>>& membersArena() const { return arenaMembers; }
 private:
     // ===== mmap handling =====
     bool mapFile();
     void unmapFile();
-
+    bool loadDOM();
+    size_t parseValueDOM(std::string_view sv, size_t& i);
+    size_t parseObjectDOM(std::string_view sv, size_t& i);
+    size_t parseArrayDOM(std::string_view sv, size_t& i);
+    size_t parseStringDOM(std::string_view sv, size_t& i);
+    size_t parseNumberDOM(std::string_view sv, size_t& i);
+    size_t parseLiteralDOM(std::string_view sv, size_t& i);
     // ===== detection & parse =====
     bool parseFast();          // mmap + views
     bool parseSlowFallback();  // ako hoćeš, može ostati tvoj postojeći slow
@@ -98,11 +162,13 @@ private:
 
     // Lazy materialization
     const std::string& materialize(size_t r, size_t c) const;
-
 private:
     std::string filename_;
     Options opt_;
-
+    std::vector<JSONNode> nodes_;
+    std::vector<uint32_t> arenaChildren;
+    std::vector<std::pair<std::string_view, uint32_t>> arenaMembers;
+    size_t rootIndex_ = SIZE_MAX;
     // mapped data
     const char* base_ = nullptr;
     size_t size_ = 0;

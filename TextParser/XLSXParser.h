@@ -78,6 +78,8 @@ private:
 
     inline size_t idx(size_t r, size_t c) const { return r * cols_ + c; }
 
+    void parseStyles(const std::string& xml);
+    bool isDateStyle(uint16_t style) const;
 private:
 
     std::string filename_;
@@ -86,6 +88,7 @@ private:
     MappedFile zip_;
     std::unordered_map<std::string, ZipEntry> zipIndex_;
 
+    std::vector<bool> styleIsDate_;
     // workbook
     struct SheetInfo {
         std::string name;
@@ -108,6 +111,7 @@ private:
         uint32_t len = 0;
         uint32_t sst = 0;
         uint8_t  kind = 0;
+        uint16_t style = 0;
     };
 
     std::string sheetXML_;

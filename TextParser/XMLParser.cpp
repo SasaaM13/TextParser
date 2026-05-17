@@ -1,449 +1,707 @@
 ﻿#include "XMLParser.h"
 #include <fstream>
 #include <cstring>
-#include <algorithm>
 
-// ======= fast ctz32 =======
-static inline uint32_t fast_ctz32(uint32_t x)
+static inline bool isWS(char c)
 {
-    if(x == 0) return 32u;
-
-#if defined(_MSC_VER)
-    unsigned long r = 0;
-    _BitScanForward(&r, x);
-    return (uint32_t)r;
-#else
-    return (uint32_t)__builtin_ctz(x);
-#endif
+    return c == ' ' ||
+        c == '\n' ||
+        c == '\r' ||
+        c == '\t';
 }
 
-// ===================================================
-//  Konstruktor
-// ===================================================
-
-XMLParser::XMLParser(std::string path)
-    : path_(std::move(path))
+inline const char* find3(
+    const char* p,
+    const char* end,
+    char a,
+    char b,
+    char c)
 {
-}
-
-// ===================================================
-//  setBuffer
-// ===================================================
-
-void XMLParser::setBuffer(const char* data, std::size_t size)
-{
-    buffer_.assign(data, data + size);
-    data_ = buffer_.data();
-    size_ = buffer_.size();
-    end_ = data_ + size_;
-}
-
-// ===================================================
-//  isAllWhitespace
-// ===================================================
-
-bool XMLParser::isAllWhitespace(const char* s, std::size_t len)
-{
-    for(std::size_t i = 0; i < len; ++i)
+    while(p + 2 < end)
     {
-        unsigned char c = (unsigned char)s[i];
-        if(c != ' ' && c != '\t' && c != '\n' && c != '\r')
-            return false;
-    }
-    return true;
-}
-
-// ===================================================
-//  findSeq
-// ===================================================
-
-std::size_t XMLParser::findSeq(std::size_t from, std::string_view seq) const
-{
-    if(seq.empty() || from >= size_) return npos;
-
-    const char* base = data_;
-    const char* p = base + from;
-    const char* end = base + size_;
-
-    const char* pat = seq.data();
-    std::size_t plen = seq.size();
-
-    const char first = pat[0];
-
-    while(p + plen <= end)
-    {
-        const void* hit = std::memchr(p, first, (size_t)(end - p));
-        if(!hit) return npos;
-
-        const char* h = (const char*)hit;
-        if(h + plen > end) return npos;
-
-        if(std::memcmp(h, pat, plen) == 0)
-            return (size_t)(h - base);
-
-        p = h + 1;
-    }
-    return npos;
-}
-
-// ===================================================
-//  findNextLT — SIMD ubrzana pretraga '<'
-// ===================================================
-
-std::size_t XMLParser::findNextLT(std::size_t pos) const
-{
-    if(pos >= size_) return npos;
-
-#if defined(__AVX2__) || defined(_MSC_VER)
-    const __m256i ltvec = _mm256_set1_epi8('<');
-    const char* base = data_;
-    std::size_t i = pos;
-
-    for(; i + 32 <= size_; i += 32)
-    {
-        __m256i block = _mm256_loadu_si256((__m256i const*)(base + i));
-        __m256i cmp = _mm256_cmpeq_epi8(block, ltvec);
-        uint32_t mask = (uint32_t)_mm256_movemask_epi8(cmp);
-
-        if(mask)
-            return i + fast_ctz32(mask);
+        if(p[0] == a &&
+            p[1] == b &&
+            p[2] == c)
+        {
+            return p;
+        }
+        ++p;
     }
 
-    for(; i < size_; ++i)
-        if(base[i] == '<') return i;
-
-    return npos;
-
-#else
-    for(std::size_t i = pos; i < size_; ++i)
-        if(data_[i] == '<') return i;
-
-    return npos;
-#endif
+    return nullptr;
 }
 
 // ===================================================
-//  parseFast — ONE-PASS SIMD STREAM XML PARSER
+// XMLValue
 // ===================================================
 
-void XMLParser::parseFast()
+bool XMLValue::valid() const
 {
-    elementCount_ = 0;
-    textNodeCount_ = 0;
-    root_ = DataNode("#document", "", 0);
-
-    if(size_ == 0) return;
-
-    std::size_t pos = 0;
-    if(size_ >= 3 &&
-        (unsigned char)data_[0] == 0xEF &&
-        (unsigned char)data_[1] == 0xBB &&
-        (unsigned char)data_[2] == 0xBF)
-    {
-        pos = 3;
-    }
-
-    std::size_t lastTagEnd = pos;
-
-    while(true)
-    {
-        std::size_t ltPos = findNextLT(pos);
-        if(ltPos == npos)
-        {
-            if(lastTagEnd < size_)
-            {
-                std::size_t len = size_ - lastTagEnd;
-                if(len && !isAllWhitespace(data_ + lastTagEnd, len))
-                    ++textNodeCount_;
-            }
-            break;
-        }
-
-        if(ltPos > lastTagEnd)
-        {
-            std::size_t len = ltPos - lastTagEnd;
-            if(len && !isAllWhitespace(data_ + lastTagEnd, len))
-                ++textNodeCount_;
-        }
-
-        // find '>'
-        std::size_t gtPos = ltPos + 1;
-        while(gtPos < size_ && data_[gtPos] != '>') ++gtPos;
-        if(gtPos >= size_) break;
-
-        const char* t = data_ + ltPos;
-        std::size_t tlen = gtPos - ltPos + 1;
-
-        // ========== COMMENT ========
-        if(tlen >= 4 && std::memcmp(t, "<!--", 4) == 0)
-        {
-            std::size_t endC = findSeq(ltPos, "-->");
-            if(endC == npos)
-            {
-                pos = gtPos + 1;
-                lastTagEnd = pos;
-                continue;
-            }
-            pos = endC + 3;
-            skipWS(pos);
-            lastTagEnd = pos;
-            continue;
-        }
-
-        // ========== CDATA ==========
-        if(tlen >= 9 && std::memcmp(t, "<![CDATA[", 9) == 0)
-        {
-            std::size_t endCD = findSeq(ltPos + 9, "]]>");
-            if(endCD == npos) break;
-
-            std::size_t contentStart = ltPos + 9;
-            std::size_t contentLen = endCD - contentStart;
-
-            if(contentLen && !isAllWhitespace(data_ + contentStart, contentLen))
-                ++textNodeCount_;
-
-            pos = endCD + 3;
-            skipWS(pos);
-            lastTagEnd = pos;
-            continue;
-        }
-
-        // ========== PROCESSING INSTRUCTION (<? ... ?>) ========
-        if(t[1] == '?')
-        {
-            std::size_t endPI = findSeq(ltPos + 2, "?>");
-            if(endPI == npos) break;
-
-            pos = endPI + 2;
-            skipWS(pos);
-            lastTagEnd = pos;
-            continue;
-        }
-
-        // ========== CLOSING TAG </tag> ==========
-        if(t[1] == '/')
-        {
-            pos = gtPos + 1;
-            skipWS(pos);
-            lastTagEnd = pos;
-            continue;
-        }
-
-        // ========== SELF CLOSING <tag .../> ==========
-        if(tlen >= 3 && t[tlen - 2] == '/')
-        {
-            ++elementCount_;
-            pos = gtPos + 1;
-            skipWS(pos);
-            lastTagEnd = pos;
-            continue;
-        }
-
-        // ========== NORMAL OPENING <tag> ==========
-        ++elementCount_;
-        pos = gtPos + 1;
-        skipWS(pos);
-        lastTagEnd = pos;
-    }
+    return owner_ != nullptr;
 }
 
-std::optional<XMLValue> XMLParser::getByIndex(size_t index) const
+bool XMLValue::isElement() const
 {
-    if(!data_ || size_ == 0)
+    return valid();
+}
+
+bool XMLValue::isText() const
+{
+    return valid() && owner_->nodesP_[idx_].text != nullptr;
+}
+
+std::string_view XMLValue::name() const
+{
+    if(!valid())
+        return {};
+
+    auto& n =
+        owner_->nodesP_[idx_];
+
+    if(!n.name)
+        return {};
+
+    return std::string_view(
+        n.name,
+        n.nameLen);
+}
+std::string_view XMLValue::text() const
+{
+    if(!valid())
+        return {};
+
+    auto& n =
+        owner_->nodesP_[idx_];
+
+    if(!n.text)
+        return {};
+
+    return std::string_view(
+        n.text,
+        n.textLen);
+}
+XMLValue XMLValue::firstChild() const
+{
+    uint32_t child =
+        owner_->nodesP_[idx_].firstChild;
+
+    if(child == UINT32_MAX)
+        return {};
+
+    return XMLValue(owner_, child);
+}
+
+XMLValue XMLValue::nextSibling() const
+{
+    uint32_t sibling =
+        owner_->nodesP_[idx_].nextSibling;
+
+    if(sibling == UINT32_MAX)
+        return {};
+
+    return XMLValue(owner_, sibling);
+}
+
+XMLValue XMLValue::child(std::string_view wanted) const
+{
+    if(!valid())
+        return {};
+
+    for(auto c = firstChild();
+        c.valid();
+        c = c.nextSibling())
+    {
+        if(c.name() == wanted)
+            return c;
+    }
+
+    return {};
+}
+
+std::string_view XMLValue::childText(
+    std::string_view wanted) const
+{
+    auto c = child(wanted);
+
+    if(!c.valid())
+        return {};
+
+    auto txt =
+        c.firstChild();
+
+    if(txt.valid() &&
+        txt.isText())
+    {
+        return txt.text();
+    }
+
+    return {};
+}
+std::optional<int>
+XMLValue::toInt() const
+{
+    auto s = text();
+
+    if(s.empty())
         return std::nullopt;
 
-    const char* p = data_;
-    const char* end = data_ + size_;
+    int v = 0;
 
-    size_t found = 0;
+    auto [p, ec] =
+        std::from_chars(
+            s.data(),
+            s.data() + s.size(),
+            v);
 
-    while(p < end)
+    if(ec != std::errc())
+        return std::nullopt;
+
+    return v;
+}
+std::optional<double> XMLValue::toDouble() const
+{
+    auto s = text();
+
+    if(s.empty())
+        return std::nullopt;
+
+    char* end = nullptr;
+
+    double v =
+        std::strtod(
+            s.data(),
+            &end);
+
+    if(end == s.data())
+        return std::nullopt;
+
+    return v;
+}
+std::optional<bool> XMLValue::toBool() const
+{
+    auto s = text();
+
+    if(s == "true" ||
+        s == "1" ||
+        s == "yes")
     {
-        // find '<'
-        const char* lt = (const char*)memchr(p, '<', end - p);
-        if(!lt) break;
+        return true;
+    }
 
-        // find '>'
-        const char* gt = (const char*)memchr(lt, '>', end - lt);
-        if(!gt) break;
-
-        // extract tag name
-        const char* nameStart = lt + 1;
-        while(nameStart < gt && (*nameStart == '/' || *nameStart == '?' || *nameStart == ' '))
-            nameStart++;
-
-        const char* nameEnd = nameStart;
-        while(nameEnd < gt &&
-            *nameEnd != ' ' && *nameEnd != '/' && *nameEnd != '>')
-            nameEnd++;
-
-        if(nameStart == nameEnd) {
-            p = gt + 1;
-            continue;
-        }
-
-        std::string_view name(nameStart, nameEnd - nameStart);
-
-        // extract text
-        const char* textStart = gt + 1;
-        const char* nextLT = (const char*)memchr(textStart, '<', end - textStart);
-        if(!nextLT) nextLT = end;
-
-        std::string_view text(textStart, nextLT - textStart);
-
-        // trim whitespace
-        size_t s = 0, e = text.size();
-        while(s < e && isspace((unsigned char)text[s])) s++;
-        while(e > s && isspace((unsigned char)text[e - 1])) e--;
-
-        // Only count entries with non-empty text
-        if(e > s)
-        {
-            if(found == index)
-            {
-                return XMLValue{ name, text.substr(s, e - s) };
-            }
-            found++;
-        }
-
-        p = nextLT;
+    if(s == "false" ||
+        s == "0" ||
+        s == "no")
+    {
+        return false;
     }
 
     return std::nullopt;
 }
-
-std::vector<XMLValue> XMLParser::getByName(std::string_view name) const
+std::optional<Date>
+XMLValue::toDate() const
 {
-    std::vector<XMLValue> result;
-    auto it = indexByName_.find(name);
-    if(it == indexByName_.end()) return result;
+    Date d;
 
-    for(size_t idx : it->second)
-    {
-        auto [tag, text] = values_[idx];
-        result.push_back(XMLValue{ tag, text });
-    }
-    return result;
+    if(parseDate(text(), d))
+        return d;
+
+    return std::nullopt;
 }
 
-std::optional<std::string_view> XMLParser::findFirst(std::string_view tag) const
+std::vector<XMLValue>
+XMLValue::children(
+    std::string_view wanted) const
 {
-    std::string open = "<" + std::string(tag);
-    const char* p = data_;
+    std::vector<XMLValue> out;
 
-    while(true)
+    for(auto c = firstChild();
+        c.valid();
+        c = c.nextSibling())
     {
-        const char* hit = (const char*)memchr(p, '<', end_ - p);
-        if(!hit) return std::nullopt;
-
-        // provjeri da li tag odgovara
-        if(std::memcmp(hit + 1, tag.data(), tag.size()) == 0)
-        {
-            // skip to end of opening tag ">"
-            const char* gt = (const char*)memchr(hit, '>', end_ - hit);
-            if(!gt) return std::nullopt;
-
-            const char* textStart = gt + 1;
-
-            // find next '<'
-            const char* nextLT = (const char*)memchr(textStart, '<', end_ - textStart);
-            if(!nextLT) return std::nullopt;
-
-            size_t len = nextLT - textStart;
-            return std::string_view(textStart, len);
-        }
-
-        p = hit + 1;
+        if(c.name() == wanted)
+            out.push_back(c);
     }
-}
 
-
-std::vector<std::string_view> XMLParser::findAll(std::string_view tag) const
-{
-    std::vector<std::string_view> out;
-    const char* p = data_;
-
-    while(true)
-    {
-        const char* hit = (const char*)memchr(p, '<', end_ - p);
-        if(!hit) break;
-
-        if(std::memcmp(hit + 1, tag.data(), tag.size()) == 0)
-        {
-            const char* gt = (const char*)memchr(hit, '>', end_ - hit);
-            if(!gt) break;
-
-            const char* textStart = gt + 1;
-            const char* nextLT = (const char*)memchr(textStart, '<', end_ - textStart);
-            if(!nextLT) break;
-
-            out.emplace_back(textStart, nextLT - textStart);
-            p = nextLT;
-        }
-        else {
-            p = hit + 1;
-        }
-    }
     return out;
 }
+// ===================================================
+// Parser core
+// ===================================================
 
-std::optional<std::string_view> XMLParser::getValueAtIndex(size_t index) const
+XMLParser::XMLParser(std::string path, Options opt)
+    : path_(std::move(path)), opt_(opt)
 {
-    size_t counter = 0;
-    const char* p = data_;
-
-    while(true)
-    {
-        const char* lt = (const char*)memchr(p, '<', end_ - p);
-        if(!lt) return std::nullopt;
-
-        const char* gt = (const char*)memchr(lt, '>', end_ - lt);
-        if(!gt) return std::nullopt;
-
-        const char* textStart = gt + 1;
-        const char* nextLT = (const char*)memchr(textStart, '<', end_ - textStart);
-        if(!nextLT) return std::nullopt;
-
-        if(nextLT > textStart)  // non-empty
-        {
-            if(counter == index)
-            {
-                return std::string_view(textStart, nextLT - textStart);
-            }
-            counter++;
-        }
-        p = nextLT;
-    }
 }
 
+void XMLParser::reset()
+{
+    nodesP_.clear();
+    nodes_.clear();
+    elementCount_ = 0;
+}
+
+bool XMLParser::mapFile()
+{
+    namespace fs = std::filesystem;
+
+    if(!fs::exists(path_))
+        return false;
+
+    size_ = (size_t)fs::file_size(path_);
+
+#ifdef _WIN32
+    hFile_ = CreateFileA(path_.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+
+    if(hFile_ == INVALID_HANDLE_VALUE)
+        return false;
+    hMap_ = CreateFileMappingA(hFile_, NULL, PAGE_WRITECOPY, 0, 0, NULL);
+    if(!hMap_) return false;
+
+    base_ = (char*)MapViewOfFile(hMap_, FILE_MAP_COPY, 0, 0, 0);
+    if(!base_) return false;
+#else
+    fd_ = open(path_.c_str(), O_RDONLY);
+    if(fd_ < 0) return false;
+
+    void* mapped = mmap(nullptr, size_, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd_, 0);
+    if(mapped == MAP_FAILED) return false;
+
+    base_ = (char*)mapped;
+#endif
+
+    data_ = base_;
+    end_ = data_ + size_;
+    return true;
+}
+
+void XMLParser::unmapFile()
+{
+#ifdef _WIN32
+    if(base_) UnmapViewOfFile(base_);
+    if(hMap_) CloseHandle(hMap_);
+    if(hFile_ != INVALID_HANDLE_VALUE) CloseHandle(hFile_);
+#else
+    if(base_) munmap((void*)base_, size_);
+    if(fd_ >= 0) close(fd_);
+#endif
+}
+
+//size_t XMLParser::findNextLT(size_t pos) const
+//{
+//    if(pos >= size_)
+//        return size_t(-1);
+//
+//    const void* hit = std::memchr(data_ + pos, '<', size_ - pos);
+//    if(!hit)
+//        return size_t(-1);
+//
+//    return (size_t)((const char*)hit - data_);
+//}
+
+size_t XMLParser::findSeq(size_t from, std::string_view seq) const
+{
+    const char* p = data_ + from;
+    const char* end = data_ + size_;
+
+    while(p + seq.size() <= end)
+    {
+        if(std::memcmp(p, seq.data(), seq.size()) == 0)
+            return (size_t)(p - data_);
+        ++p;
+    }
+    return size_t(-1);
+}
 
 // ===================================================
-//  load()
+// POINTER DOM (FAST)
+// ===================================================
+bool XMLParser::parseDOMPointer()
+{
+    nodesP_.clear();
+
+    const size_t reserveCount =
+        size_ / 12 + 1024;
+
+    nodesP_.reserve(
+        reserveCount);
+
+    // =========================
+    // DOCUMENT ROOT
+    // =========================
+    XMLNodeP doc{};
+
+    doc.name =
+        "#document";
+
+    doc.nameLen =
+        10;
+
+    rootIndex_ =
+        appendNodeP(doc);
+
+    // =====================================
+    // RAW STACK (FASTER THAN VECTOR)
+    // =====================================
+    uint32_t stack[256];
+
+    uint32_t* sp =
+        stack;
+
+    *sp++ =
+        rootIndex_;
+
+    size_t pos = 0;
+
+    const char* p =
+        data_;
+
+    const char* end =
+        data_ + size_;
+
+    while(p < end)
+    {
+        // =================================
+        // FAST '<' SEARCH
+        // =================================
+        while(p < end &&
+            *p != '<')
+        {
+            ++p;
+        }
+
+        if(p >= end)
+            break;
+
+        const size_t lt =
+            (size_t)
+            (p - data_);
+
+        // =================================
+        // TEXT BETWEEN TAGS
+        // =================================
+        if(lt > pos)
+        {
+            char* txt =
+                data_ + pos;
+
+            char* txtEnd =
+                data_ + lt;
+
+            // skip whitespace-only nodes
+            bool hasRealText =
+                false;
+
+            for(char* s = txt;
+                s < txtEnd;
+                ++s)
+            {
+                if(!isWS(*s))
+                {
+                    hasRealText =
+                        true;
+                    break;
+                }
+            }
+
+            if(hasRealText)
+            {
+                XMLNodeP node{};
+
+                node.text =
+                    txt;
+
+                node.textLen =
+                    (uint32_t)
+                    (txtEnd - txt);
+
+                node.parent =
+                    *(sp - 1);
+
+                uint32_t idx =
+                    appendNodeP(
+                        node);
+
+                appendChildP(
+                    *(sp - 1),
+                    idx);
+            }
+        }
+
+        pos = lt;
+
+        if(pos + 1 >= size_)
+            break;
+
+        // =================================
+        // COMMENT <!-- -->
+        // =================================
+        if(pos + 4 <= size_ &&
+            data_[pos + 1] == '!' &&
+            data_[pos + 2] == '-' &&
+            data_[pos + 3] == '-')
+        {
+            const char* cEnd =
+                find3(
+                    data_ + pos + 4,
+                    end,
+                    '-',
+                    '-',
+                    '>');
+
+            if(!cEnd)
+                return false;
+
+            pos =
+                (size_t)
+                (cEnd - data_) + 3;
+
+            p =
+                data_ + pos;
+
+            continue;
+        }
+
+        // =================================
+        // CDATA
+        // <![CDATA[
+        // =================================
+        if(pos + 9 <= size_ &&
+            data_[pos + 1] == '!' &&
+            data_[pos + 2] == '[')
+        {
+            char* start =
+                data_ + pos + 9;
+
+            char* cdataEnd =
+                (char*)
+                find3(
+                    start,
+                    end,
+                    ']',
+                    ']',
+                    '>');
+
+            if(!cdataEnd)
+                return false;
+
+            if(cdataEnd > start)
+            {
+                XMLNodeP node{};
+
+                node.text =
+                    start;
+
+                node.textLen =
+                    (uint32_t)
+                    (cdataEnd - start);
+
+                node.parent =
+                    *(sp - 1);
+
+                uint32_t idx =
+                    appendNodeP(
+                        node);
+
+                appendChildP(
+                    *(sp - 1),
+                    idx);
+            }
+
+            pos =
+                (size_t)
+                (cdataEnd - data_) + 3;
+
+            p =
+                data_ + pos;
+
+            continue;
+        }
+
+        // =================================
+        // XML DECLARATION
+        // <?xml ?>
+        // =================================
+        if(data_[pos + 1]
+            == '?')
+        {
+            const char* declEnd =
+                strstr(
+                    data_ + pos + 2,
+                    "?>");
+
+            if(!declEnd)
+                return false;
+
+            pos =
+                (size_t)
+                (declEnd - data_) + 2;
+
+            p =
+                data_ + pos;
+
+            continue;
+        }
+
+        // =================================
+        // <!DOCTYPE>
+        // =================================
+        if(data_[pos + 1]
+            == '!')
+        {
+            const void* gt =
+                memchr(
+                    data_ + pos,
+                    '>',
+                    size_ - pos);
+
+            if(!gt)
+                return false;
+
+            pos =
+                (size_t)
+                ((const char*)
+                    gt - data_) + 1;
+
+            p =
+                data_ + pos;
+
+            continue;
+        }
+
+        // =================================
+        // CLOSING TAG
+        // </tag>
+        // =================================
+        if(data_[pos + 1]
+            == '/')
+        {
+            const void* gt =
+                memchr(
+                    data_ + pos,
+                    '>',
+                    size_ - pos);
+
+            if(!gt)
+                return false;
+
+            pos =
+                (size_t)
+                ((const char*)
+                    gt - data_) + 1;
+
+            if(sp >
+                stack + 1)
+            {
+                --sp;
+            }
+
+            p =
+                data_ + pos;
+
+            continue;
+        }
+
+        // =================================
+        // OPENING TAG
+        // =================================
+        ++pos;
+
+        while(pos < size_ &&
+            isWS(data_[pos]))
+        {
+            ++pos;
+        }
+
+        const size_t
+            tagStart =
+            pos;
+
+        while(pos < size_ &&
+            data_[pos] != '>' &&
+            data_[pos] != '/' &&
+            !isWS(data_[pos]))
+        {
+            ++pos;
+        }
+
+        if(pos <= tagStart)
+            return false;
+
+        XMLNodeP node{};
+
+        node.name =
+            data_ +
+            tagStart;
+
+        node.nameLen =
+            (uint32_t)
+            (pos - tagStart);
+
+        node.parent =
+            *(sp - 1);
+
+        uint32_t me =
+            appendNodeP(
+                node);
+
+        appendChildP(
+            *(sp - 1),
+            me);
+
+        ++elementCount_;
+
+        bool selfClosing =
+            false;
+
+        while(pos < size_)
+        {
+            if(data_[pos]
+                == '>')
+            {
+                ++pos;
+                break;
+            }
+
+            if(data_[pos] == '/' &&
+                pos + 1 < size_ &&
+                data_[pos + 1] == '>')
+            {
+                selfClosing =
+                    true;
+
+                pos += 2;
+                break;
+            }
+
+            ++pos;
+        }
+
+        if(!selfClosing)
+        {
+            *sp++ =
+                me;
+        }
+
+        p =
+            data_ + pos;
+    }
+
+    return true;
+}
+// ===================================================
+// LOAD
 // ===================================================
 
 bool XMLParser::load()
 {
-    if(buffer_.empty())
-    {
-        if(path_.empty()) return false;
+    reset();
 
-        std::ifstream f(path_, std::ios::binary);
-        if(!f) return false;
+    if(!mapFile())
+        return false;
 
-        f.seekg(0, std::ios::end);
-        std::size_t len = (std::size_t)f.tellg();
-        if(len == 0) return false;
+    if(opt_.usePointerDom)
+        return parseDOMPointer();
 
-        buffer_.resize(len);
-        f.seekg(0, std::ios::beg);
-        f.read(buffer_.data(), len);
-    }
-
-    data_ = buffer_.data();
-    size_ = buffer_.size();
-    end_ = data_ + size_;
-
-    parseFast();
-    notifyLoaded();
-    return true;
+    return false;
 }

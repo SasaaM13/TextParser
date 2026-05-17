@@ -1,6 +1,81 @@
 ﻿#include "JSONParser.h"
 #include <algorithm>
+bool JSONValue::isString() const { return owner->nodes()[idx].type == (uint32_t)JSONType::String; }
+bool JSONValue::isNumber() const { return owner->nodes()[idx].type == (uint32_t)JSONType::Number; }
+bool JSONValue::isBool()   const { return owner->nodes()[idx].type == (uint32_t)JSONType::Bool; }
+bool JSONValue::isArray()  const { return owner->nodes()[idx].type == (uint32_t)JSONType::Array; }
+bool JSONValue::isObject() const { return owner->nodes()[idx].type == (uint32_t)JSONType::Object; }
+bool JSONValue::isNull()   const { return owner->nodes()[idx].type == (uint32_t)JSONType::Null; }
 
+double JSONValue::asDouble() const
+{
+    auto& n = const_cast<JSONNode&>(owner->nodes()[idx]);
+
+    if(n.type != (uint32_t)JSONType::Number)
+        return 0.0;
+
+    // lazy parse (nema numParsed više)
+    if(std::isnan(n.num))
+    {
+        double val;
+        auto res = std::from_chars(n.raw.data(), n.raw.data() + n.raw.size(), val);
+        if(res.ec == std::errc())
+            n.num = val;
+    }
+
+    return n.num;
+}
+
+bool JSONValue::asBool() const
+{
+    return owner->nodes()[idx].boolVal;
+}
+
+std::string_view JSONValue::asStringView() const
+{
+    return owner->nodes()[idx].str;
+}
+
+size_t JSONValue::size() const
+{
+    const auto& n = owner->nodes()[idx];
+
+    if(n.type == (uint32_t)JSONType::Array)  return n.b;
+    if(n.type == (uint32_t)JSONType::Object) return n.b;
+
+    return 0;
+}
+
+JSONValue JSONValue::operator[](size_t i) const
+{
+    const auto& n = owner->nodes()[idx];
+
+    if(n.type != (uint32_t)JSONType::Array || i >= n.b)
+        return {};
+
+    return JSONValue(owner, owner->childrenArena()[n.a + (uint32_t)i]);
+}
+
+JSONValue JSONValue::operator[](std::string_view key) const
+{
+    if(!valid()) return {};
+
+    const auto& n = owner->nodes()[idx];
+
+    if(n.type != (uint32_t)JSONType::Object)
+        return {};
+
+    for(uint32_t k = 0; k < n.b; ++k)
+    {
+        const auto& kv = owner->membersArena()[n.a + k];
+
+        if(kv.first.size() == key.size() &&
+            std::memcmp(kv.first.data(), key.data(), key.size()) == 0)
+            return JSONValue(owner, kv.second);
+    }
+
+    return {};
+}
 size_t JSONParser::skip_ws(std::string_view sv, size_t i) 
 {
     while(i < sv.size() && is_ws((unsigned char)sv[i])) ++i;
@@ -266,45 +341,295 @@ void JSONParser::unmapFile() {
 #endif
 }
 
-bool JSONParser::load() 
+size_t JSONParser::parseValueDOM(std::string_view sv, size_t& i)
 {
+    i = skip_ws(sv, i);
+    if(i >= sv.size()) return SIZE_MAX;
+
+    char c = sv[i];
+
+    switch(c)
+    {
+    case '{': return parseObjectDOM(sv, i);
+    case '[': return parseArrayDOM(sv, i);
+    case '"': return parseStringDOM(sv, i);
+    default:
+        if((c >= '0' && c <= '9') || c == '-')
+            return parseNumberDOM(sv, i);
+        return parseLiteralDOM(sv, i);
+    }
+}
+
+size_t JSONParser::parseStringDOM(std::string_view sv, size_t& i)
+{
+    std::string_view out;
+    if(!parse_json_string_view(sv, i, out)) return SIZE_MAX;
+
+    JSONNode node{};
+    node.type = static_cast<uint32_t>(JSONType::String);
+    node.str = out;
+
+    nodes_.push_back(node);
+    return nodes_.size() - 1;
+}
+
+size_t JSONParser::parseNumberDOM(std::string_view sv, size_t& i)
+{
+    size_t start = i;
+
+    while(i < sv.size())
+    {
+        char c = sv[i];
+        if((c >= '0' && c <= '9') || c == '.' || c == '-' || c == 'e' || c == 'E' || c == '+')
+            ++i;
+        else break;
+    }
+
+    JSONNode node{};
+    node.type = static_cast<uint32_t>(JSONType::Number);
+    node.raw = std::string_view(sv.data() + start, i - start);
+    node.num = std::numeric_limits<double>::quiet_NaN();
+
+    nodes_.push_back(node);
+    return nodes_.size() - 1;
+}
+
+size_t JSONParser::parseLiteralDOM(std::string_view sv, size_t& i)
+{
+    if(sv.substr(i, 4) == "true")
+    {
+        i += 4;
+        JSONNode n{};
+        n.type = static_cast<uint32_t>(JSONType::Bool);
+        n.boolVal = true;
+        nodes_.push_back(n);
+        return nodes_.size() - 1;
+    }
+
+    if(sv.substr(i, 5) == "false")
+    {
+        i += 5;
+        JSONNode n{};
+        n.type = static_cast<uint32_t>(JSONType::Bool);
+        n.boolVal = false;
+        nodes_.push_back(n);
+        return nodes_.size() - 1;
+    }
+
+    if(sv.substr(i, 4) == "null")
+    {
+        i += 4;
+        JSONNode n{};
+        n.type = static_cast<uint32_t>(JSONType::Null);
+        nodes_.push_back(n);
+        return nodes_.size() - 1;
+    }
+
+    return SIZE_MAX;
+}
+
+size_t JSONParser::parseArrayDOM(std::string_view sv, size_t& i)
+{
+    JSONNode node{};
+    node.type = static_cast<uint32_t>(JSONType::Array);
+
+    ++i; // [
+
+    std::vector<uint32_t> localChildren;
+    localChildren.reserve(8);
+
+    while(true)
+    {
+        i = skip_ws(sv, i);
+        if(i >= sv.size()) return SIZE_MAX;
+
+        if(sv[i] == ']')
+        {
+            ++i;
+            break;
+        }
+
+        size_t child = parseValueDOM(sv, i);
+        if(child == SIZE_MAX) return SIZE_MAX;
+
+        localChildren.push_back((uint32_t)child);
+
+        i = skip_ws(sv, i);
+
+        if(i < sv.size() && sv[i] == ',')
+        {
+            ++i;
+            continue;
+        }
+
+        if(i < sv.size() && sv[i] == ']')
+        {
+            ++i;
+            break;
+        }
+
+        return SIZE_MAX;
+    }
+
+    node.a = (uint32_t)arenaChildren.size();
+    node.b = (uint32_t)localChildren.size();
+
+    arenaChildren.insert(arenaChildren.end(), localChildren.begin(), localChildren.end());
+
+    nodes_.push_back(node);
+    return nodes_.size() - 1;
+}
+
+size_t JSONParser::parseObjectDOM(std::string_view sv, size_t& i)
+{
+    JSONNode node{};
+    node.type = static_cast<uint32_t>(JSONType::Object);
+
+    ++i; // {
+
+    std::vector<std::pair<std::string_view, uint32_t>> localMembers;
+    localMembers.reserve(8);
+
+    while(true)
+    {
+        i = skip_ws(sv, i);
+        if(i >= sv.size()) return SIZE_MAX;
+
+        if(sv[i] == '}')
+        {
+            ++i;
+            break;
+        }
+
+        std::string_view key;
+        if(!parse_json_string_view(sv, i, key)) return SIZE_MAX;
+        if(!expect_char(sv, i, ':')) return SIZE_MAX;
+
+        size_t val = parseValueDOM(sv, i);
+        if(val == SIZE_MAX) return SIZE_MAX;
+
+        localMembers.emplace_back(key, (uint32_t)val);
+
+        i = skip_ws(sv, i);
+
+        if(i < sv.size() && sv[i] == ',')
+        {
+            ++i;
+            continue;
+        }
+
+        if(i < sv.size() && sv[i] == '}')
+        {
+            ++i;
+            break;
+        }
+
+        return SIZE_MAX;
+    }
+
+    node.a = (uint32_t)arenaMembers.size();
+    node.b = (uint32_t)localMembers.size();
+
+    arenaMembers.insert(arenaMembers.end(), localMembers.begin(), localMembers.end());
+
+    nodes_.push_back(node);
+    return nodes_.size() - 1;
+}
+
+bool JSONParser::loadDOM()
+{
+    if(!mapFile()) return false;
+
+    nodes_.clear();
+    nodes_.reserve(size_ / 16);
+    std::string_view sv(base_, size_);
+    size_t i = skip_bom_and_ws(sv);
+
+    rootIndex_ = parseValueDOM(sv, i);
+
+    return rootIndex_ != SIZE_MAX;
+}
+
+//bool JSONParser::load() 
+//{
+//    rows_ = cols_ = 0;
+//    totalFields_ = 0;
+//    dataViews_.clear();
+//    colNames_.clear();
+//    root_ = DataNode("root", "", 0);
+//
+//    cacheString_.clear();
+//    cacheInt_.clear();
+//    cacheDouble_.clear();
+//    cacheBool_.clear();
+//
+//    if(!opt_.preferFastPath)
+//        return parseSlowFallback();
+//
+//    namespace fs = std::filesystem;
+//    if(!fs::exists(filename_))
+//        return false;
+//
+//    if(opt_.useMMap)
+//    {
+//        unmapFile();
+//
+//        if(!mapFile())
+//            return parseSlowFallback();
+//
+//        if(parseFast()) 
+//        {
+//            notifyLoaded();
+//            return true;  
+//        }
+//
+//        unmapFile();
+//        return parseSlowFallback();
+//    }
+//    return parseSlowFallback();
+//}
+
+bool JSONParser::load()
+{
+    // reset
     rows_ = cols_ = 0;
     totalFields_ = 0;
     dataViews_.clear();
     colNames_.clear();
     root_ = DataNode("root", "", 0);
-
+    nodes_.clear();
+    arenaChildren.clear();
+    arenaMembers.clear();
     cacheString_.clear();
     cacheInt_.clear();
     cacheDouble_.clear();
     cacheBool_.clear();
 
-    if(!opt_.preferFastPath)
-        return parseSlowFallback();
-
+    rootIndex_ = SIZE_MAX;
     namespace fs = std::filesystem;
     if(!fs::exists(filename_))
         return false;
 
-    if(opt_.useMMap)
+    // mmap
+    unmapFile();
+    if(!mapFile())
+        return false;
+
+    // DOM parse
+    std::string_view sv(base_, size_);
+    size_t i = skip_bom_and_ws(sv);
+
+    rootIndex_ = parseValueDOM(sv, i);
+
+    if(rootIndex_ == SIZE_MAX)
     {
         unmapFile();
-
-        if(!mapFile())
-            return parseSlowFallback();
-
-        if(parseFast()) 
-        {
-            notifyLoaded();
-            return true;  
-        }
-
-        unmapFile();
-        return parseSlowFallback();
+        return false;
     }
-    return parseSlowFallback();
-}
 
+    notifyLoaded();
+    return true;
+}
 bool JSONParser::parseFast()
 {
 	if(size_ == 0) 
