@@ -236,7 +236,6 @@ XMLParser::XMLParser(std::string path, Options opt)
 void XMLParser::reset()
 {
     nodesP_.clear();
-    nodes_.clear();
     elementCount_ = 0;
 }
 

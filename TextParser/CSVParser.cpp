@@ -24,9 +24,6 @@
 #define CSV_HAS_AVX2 0
 #endif
 
-// ============================================================
-// ULTRA-FAST CLEANUP
-// ============================================================
 static inline size_t trimCRandSemisLen(const char* base, size_t off, size_t len)
 {
     if(len == 0) return 0;
@@ -39,11 +36,8 @@ static inline size_t trimCRandSemisLen(const char* base, size_t off, size_t len)
     return n;
 }
 
-// ==============================
-// ctor / reset
-// ==============================
-CSVParser::CSVParser(std::string filename, Options opts)
-    : filename_(std::move(filename)), opts_(opts) {
+CSVParser::CSVParser(std::string filename, Options opts) : filename_(std::move(filename)), opts_(opts) 
+{
 }
 
 void CSVParser::resetState()
@@ -54,44 +48,65 @@ void CSVParser::resetState()
     backing_.reset();
 }
 
-// ==============================
-// Buffer release
-// ==============================
 void CSVParser::Buffer::release()
 {
 #ifdef _WIN32
-    if(data && mmapped) UnmapViewOfFile(data);
-    if(hMap) CloseHandle((HANDLE)hMap);
-    if(hFile) CloseHandle((HANDLE)hFile);
-    data = nullptr; size = 0; mmapped = false;
-    hFile = nullptr; hMap = nullptr;
+    if(data && mmapped)
+        UnmapViewOfFile(data);
+    if(hMap)
+        CloseHandle((HANDLE)hMap);
+    if(hFile)
+        CloseHandle((HANDLE)hFile);
+    data = nullptr; 
+    size = 0; 
+    mmapped = false;
+    hFile = nullptr; 
+    hMap = nullptr;
 #else
-    if(data && mmapped) munmap((void*)data, size);
-    if(fd >= 0) close(fd);
-    data = nullptr; size = 0; mmapped = false; fd = -1;
+    if(data && mmapped)
+        munmap((void*)data, size);
+    if(fd >= 0)
+        close(fd);
+    data = nullptr;
+    size = 0;
+    mmapped = false;
+    fd = -1;
 #endif
     owned.clear();
 }
 
-// ==============================
-// mmap / buffered read
-// ==============================
 bool CSVParser::mapFile(Buffer& buf) const
 {
 #ifdef _WIN32
-    HANDLE hFile = CreateFileA(filename_.c_str(), GENERIC_READ, FILE_SHARE_READ,
-        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if(hFile == INVALID_HANDLE_VALUE) return false;
+    HANDLE hFile = CreateFileA(filename_.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if(hFile == INVALID_HANDLE_VALUE)
+        return false;
 
     LARGE_INTEGER sz{};
-    if(!GetFileSizeEx(hFile, &sz)) { CloseHandle(hFile); return false; }
-    if(sz.QuadPart == 0) { CloseHandle(hFile); return false; }
+    if(!GetFileSizeEx(hFile, &sz)) 
+    { 
+        CloseHandle(hFile); 
+        return false;
+    }
+    if(sz.QuadPart == 0)
+    {
+        CloseHandle(hFile);
+        return false;
+    }
 
     HANDLE hMap = CreateFileMappingA(hFile, nullptr, PAGE_READONLY, 0, 0, nullptr);
-    if(!hMap) { CloseHandle(hFile); return false; }
+    if(!hMap)
+    {
+        CloseHandle(hFile);
+        return false;
+    }
 
     void* view = MapViewOfFile(hMap, FILE_MAP_READ, 0, 0, 0);
-    if(!view) { CloseHandle(hMap); CloseHandle(hFile); return false; }
+    if(!view)
+    { 
+        CloseHandle(hMap);
+        CloseHandle(hFile);
+        return false; }
 
     buf.data = (const char*)view;
     buf.size = (size_t)sz.QuadPart;
@@ -104,11 +119,23 @@ bool CSVParser::mapFile(Buffer& buf) const
     if(fd < 0) return false;
 
     struct stat sb {};
-    if(fstat(fd, &sb) < 0) { close(fd); return false; }
-    if(sb.st_size == 0) { close(fd); return false; }
+    if(fstat(fd, &sb) < 0)
+    { 
+        close(fd);
+        return false;
+    }
+    if(sb.st_size == 0) 
+    { 
+        close(fd);
+        return false;
+    }
 
     void* mem = mmap(nullptr, (size_t)sb.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-    if(mem == MAP_FAILED) { close(fd); return false; }
+    if(mem == MAP_FAILED) 
+    { 
+        close(fd);
+        return false;
+    }
 
     buf.data = (const char*)mem;
     buf.size = (size_t)sb.st_size;
@@ -121,17 +148,25 @@ bool CSVParser::mapFile(Buffer& buf) const
 bool CSVParser::readFileBuffered(Buffer& buf) const
 {
     std::FILE* f = std::fopen(filename_.c_str(), "rb");
-    if(!f) return false;
+    if(!f) 
+        return false;
 
     size_t size = 0;
-    try { size = (size_t)std::filesystem::file_size(filename_); }
-    catch(...) { size = 0; }
+    try 
+    { 
+        size = (size_t)std::filesystem::file_size(filename_);
+    }
+    catch(...)
+    {
+        size = 0; 
+    }
 
     buf.owned.resize(size);
     size_t rd = std::fread(buf.owned.data(), 1, size, f);
     std::fclose(f);
 
-    if(rd == 0) return false;
+    if(rd == 0)
+        return false;
 
     buf.data = buf.owned.data();
     buf.size = rd;
@@ -139,19 +174,17 @@ bool CSVParser::readFileBuffered(Buffer& buf) const
     return true;
 }
 
-// ==============================
-// split helpers
-// ==============================
-void CSVParser::splitLineNoQuotes(std::string_view line, char delim,
-    std::vector<std::pair<size_t, size_t>>& spans)
+void CSVParser::splitLineNoQuotes(std::string_view line, char delim, std::vector<std::pair<size_t, size_t>>& spans)
 {
     spans.clear();
     const char* p = line.data();
     size_t n = line.size();
     size_t start = 0;
 
-    for(size_t i = 0; i < n; ++i) {
-        if(p[i] == delim) {
+    for(size_t i = 0; i < n; ++i) 
+    {
+        if(p[i] == delim) 
+        {
             spans.emplace_back(start, i - start);
             start = i + 1;
         }
@@ -159,8 +192,7 @@ void CSVParser::splitLineNoQuotes(std::string_view line, char delim,
     spans.emplace_back(start, n - start);
 }
 
-void CSVParser::splitLineQuotesFast(std::string_view line, char delim,
-    std::vector<std::pair<size_t, size_t>>& spans)
+void CSVParser::splitLineQuotesFast(std::string_view line, char delim, std::vector<std::pair<size_t, size_t>>& spans)
 {
     spans.clear();
     const char* p = line.data();
@@ -168,10 +200,13 @@ void CSVParser::splitLineQuotesFast(std::string_view line, char delim,
     size_t start = 0;
     bool inq = false;
 
-    for(size_t i = 0; i < n; ++i) {
+    for(size_t i = 0; i < n; ++i) 
+    {
         char c = p[i];
-        if(c == '"') inq = !inq;
-        else if(c == delim && !inq) {
+        if(c == '"')
+            inq = !inq;
+        else if(c == delim && !inq)
+        {
             spans.emplace_back(start, i - start);
             start = i + 1;
         }
@@ -179,9 +214,6 @@ void CSVParser::splitLineQuotesFast(std::string_view line, char delim,
     spans.emplace_back(start, n - start);
 }
 
-// ==============================
-// AVX2 scan
-// ==============================
 size_t CSVParser::findNextDelimOrNL_AVX2(const char* s, size_t pos, size_t n, char delim)
 {
 #if CSV_HAS_AVX2
@@ -189,13 +221,13 @@ size_t CSVParser::findNextDelimOrNL_AVX2(const char* s, size_t pos, size_t n, ch
     const __m256i vNL = _mm256_set1_epi8('\n');
 
     size_t i = pos;
-    for(; i + 32 <= n; i += 32) {
+    for(; i + 32 <= n; i += 32) 
+    {
         __m256i chunk = _mm256_loadu_si256((const __m256i*)(s + i));
-        __m256i m = _mm256_or_si256(
-            _mm256_cmpeq_epi8(chunk, vDelim),
-            _mm256_cmpeq_epi8(chunk, vNL));
+        __m256i m = _mm256_or_si256(_mm256_cmpeq_epi8(chunk, vDelim), _mm256_cmpeq_epi8(chunk, vNL));
         int mask = _mm256_movemask_epi8(m);
-        if(mask) {
+        if(mask)
+        {
 #ifdef _WIN32
             unsigned long idx;
             _BitScanForward(&idx, (unsigned long)mask);
@@ -215,43 +247,51 @@ size_t CSVParser::findNextDelimOrNL_AVX2(const char* s, size_t pos, size_t n, ch
 #endif
 }
 
-// ==============================
-// heuristics
-// ==============================
 bool CSVParser::equalsIgnoreCase(std::string_view a, std::string_view b)
 {
-    if(a.size() != b.size()) return false;
-    for(size_t i = 0; i < a.size(); ++i) {
+    if(a.size() != b.size()) 
+        return false;
+    for(size_t i = 0; i < a.size(); ++i)
+    {
         unsigned char ca = (unsigned char)a[i];
         unsigned char cb = (unsigned char)b[i];
         if(ca >= 'A' && ca <= 'Z') ca += 32;
         if(cb >= 'A' && cb <= 'Z') cb += 32;
-        if(ca != cb) return false;
+        if(ca != cb)
+            return false;
     }
     return true;
 }
 
 bool CSVParser::looksLikeNumber(std::string_view v)
 {
-    if(v.empty()) return false;
+    if(v.empty()) 
+        return false;
     size_t i = 0;
-    if(v[i] == '+' || v[i] == '-') ++i;
+    if(v[i] == '+' || v[i] == '-')
+        ++i;
 
     bool any = false;
-    for(; i < v.size() && std::isdigit((unsigned char)v[i]); ++i) any = true;
+    for(; i < v.size() && std::isdigit((unsigned char)v[i]); ++i)
+        any = true;
 
-    if(i < v.size() && v[i] == '.') {
+    if(i < v.size() && v[i] == '.')
+    {
         ++i;
-        for(; i < v.size() && std::isdigit((unsigned char)v[i]); ++i) any = true;
+        for(; i < v.size() && std::isdigit((unsigned char)v[i]); ++i)
+            any = true;
     }
 
     if(!any) return false;
 
-    if(i < v.size() && (v[i] == 'e' || v[i] == 'E')) {
+    if(i < v.size() && (v[i] == 'e' || v[i] == 'E')) 
+    {
         ++i;
-        if(i < v.size() && (v[i] == '+' || v[i] == '-')) ++i;
+        if(i < v.size() && (v[i] == '+' || v[i] == '-'))
+            ++i;
         bool exp = false;
-        for(; i < v.size() && std::isdigit((unsigned char)v[i]); ++i) exp = true;
+        for(; i < v.size() && std::isdigit((unsigned char)v[i]); ++i)
+            exp = true;
         return exp && i == v.size();
     }
 
@@ -280,47 +320,61 @@ static inline size_t count_newlines_fast(const char* s, size_t n)
 #endif
     return cnt;
 }
-// ==============================
-// load()
-// ==============================
+
 bool CSVParser::load()
 {
     resetState();
 
     backing_ = std::make_unique<Buffer>();
     bool ok = opts_.useMMap && mapFile(*backing_);
-    if(!ok) ok = readFileBuffered(*backing_);
-    if(!ok) return false;
+    if(!ok)
+        ok = readFileBuffered(*backing_);
+    if(!ok)
+        return false;
 
     const char* s = backing_->data;
     const size_t n = backing_->size;
-    if(!s || n == 0) { notifyLoaded(); return true; }
+	if(!s || n == 0)
+	{
+		notifyLoaded();
+		return true;
+	}
 
     const size_t nlCount = count_newlines_fast(s, n);
     const size_t estimatedRows = nlCount + ((n > 0 && s[n - 1] != '\n') ? 1 : 0);
     size_t firstEnd = 0;
-    while(firstEnd < n && s[firstEnd] != '\n') ++firstEnd;
+    while(firstEnd < n && s[firstEnd] != '\n')
+        ++firstEnd;
 
     size_t firstLineEnd = firstEnd;
-    if(firstLineEnd && s[firstLineEnd - 1] == '\r') --firstLineEnd;
+    if(firstLineEnd && s[firstLineEnd - 1] == '\r')
+        --firstLineEnd;
 
     std::string_view firstLine(s, firstLineEnd);
 
     bool useQuotes = opts_.allowQuotes && firstLine.find('"') != std::string_view::npos;
 
     std::vector<std::pair<size_t, size_t>> spans;
-    if(useQuotes) splitLineQuotesFast(firstLine, opts_.delimiter, spans);
-    else splitLineNoQuotes(firstLine, opts_.delimiter, spans);
+    if(useQuotes) 
+        splitLineQuotesFast(firstLine, opts_.delimiter, spans);
+    else 
+        splitLineNoQuotes(firstLine, opts_.delimiter, spans);
 
     cols_ = spans.size();
-    if(cols_ == 0) { notifyLoaded(); return true; }
+    if(cols_ == 0)
+    { 
+        notifyLoaded();
+        return true;
+    }
 
-    if(opts_.hasHeader) {
+    if(opts_.hasHeader) 
+    {
         colNames_.resize(cols_);
         headerIndex_.clear();
         headerIndex_.reserve(cols_);
 
-        for(size_t c = 0; c < cols_; ++c) {
+        for(size_t c = 0; c < cols_; ++c) 
+        {
             auto sv = firstLine.substr(spans[c].first, spans[c].second);
             colNames_[c].assign(sv.data(), sv.size());
             headerIndex_.emplace_back(std::string_view(colNames_[c]), c);
@@ -329,7 +383,8 @@ bool CSVParser::load()
         std::sort(headerIndex_.begin(), headerIndex_.end(),
             [](auto a, auto b) { return a.first < b.first; });
     }
-    else {
+    else
+    {
         colNames_.resize(cols_);
         for(size_t c = 0; c < cols_; ++c)
             colNames_[c] = "col" + std::to_string(c + 1);
@@ -338,11 +393,12 @@ bool CSVParser::load()
     size_t dataPos = opts_.hasHeader && firstEnd < n ? firstEnd + 1 : 0;
 
     cells_.clear();
-    cells_.resize(estimatedRows * cols_);   // sve default {0,0}
+    cells_.resize(estimatedRows * cols_);
     size_t writeIdx = 0;
     size_t r = 0, c = 0;
     size_t cellStart = dataPos;
-    if(!useQuotes) {
+    if(!useQuotes) 
+    {
         size_t pos = dataPos;
 
         while(pos < n)
@@ -362,7 +418,8 @@ bool CSVParser::load()
             if(opts_.trimLastColumnCRSemis && c == cols_ - 1)
                 len = (uint32_t)trimCRandSemisLen(s, off, len);
 
-            if(c < cols_) {
+            if(c < cols_)
+            {
                 cells_[writeIdx + c] = CellSpan{ off, len };
             }
             ++c;
@@ -387,7 +444,8 @@ bool CSVParser::load()
         if(opts_.trimLastColumnCRSemis && c == cols_ - 1)
             len = (uint32_t)trimCRandSemisLen(s, off, len);
 
-        if(c < cols_) {
+        if(c < cols_)
+        {
             cells_[writeIdx + c] = CellSpan{ off, len };
         }
         ++c;
@@ -402,21 +460,22 @@ bool CSVParser::load()
     return true;
 }
 
-// ==============================
-// access
-// ==============================
 std::string_view CSVParser::valueView(size_t r, size_t c) const
 {
-    if(r >= rows_ || c >= cols_) return {};
-    if(cols_ && r > SIZE_MAX / cols_) return {};
+    if(r >= rows_ || c >= cols_)
+        return {};
+    if(cols_ && r > SIZE_MAX / cols_)
+        return {};
 
     size_t idx = r * cols_ + c;
 
-    if(idx >= cells_.size()) return {};
+    if(idx >= cells_.size())
+        return {};
 
     const auto& sp = cells_[idx];
 
-    if(sp.len == 0 || !backing_) return {};
+    if(sp.len == 0 || !backing_)
+        return {};
 
     return std::string_view(backing_->data + sp.off, sp.len);
 }
@@ -425,13 +484,16 @@ const std::string& CSVParser::value(size_t r, size_t c) const
 {
     static const std::string empty;
 
-    if(r >= rows_ || c >= cols_) return empty;
-    if(cols_ && r > SIZE_MAX / cols_) return empty;
+    if(r >= rows_ || c >= cols_)
+        return empty;
+    if(cols_ && r > SIZE_MAX / cols_)
+        return empty;
 
     ensureStringCacheSize();
 
     const size_t k = r * cols_ + c;
-    if(k >= cacheString_.size()) return empty;
+    if(k >= cacheString_.size())
+        return empty;
 
     auto& slot = cacheString_[k];
     if(!slot.has_value())
@@ -441,18 +503,17 @@ const std::string& CSVParser::value(size_t r, size_t c) const
 }
 
 
-// ==============================
-// type inference
-// ==============================
 TextFileParser::CellKind CSVParser::cellKind(size_t r, size_t c) const
 {
     auto v = valueView(r, c);
-    if(v.empty()) return CK_Empty;
+    if(v.empty()) 
+        return CK_Empty;
 
     const char ch0 = v.front();
     const char cl0 = (ch0 >= 'A' && ch0 <= 'Z') ? (char)(ch0 + 32) : ch0;
 
-    if(cl0 == 'n') {
+    if(cl0 == 'n')
+    {
         if(equalsIgnoreCase(v, "null") || equalsIgnoreCase(v, "nan"))
             return CK_Empty;
         if(looksLikeNumber(v))
@@ -460,28 +521,30 @@ TextFileParser::CellKind CSVParser::cellKind(size_t r, size_t c) const
         return CK_String;
     }
 
-    if(cl0 == 't' || cl0 == 'f' || cl0 == 'y') {
+    if(cl0 == 't' || cl0 == 'f' || cl0 == 'y')
+    {
         if(equalsIgnoreCase(v, "true") || equalsIgnoreCase(v, "false") ||
             equalsIgnoreCase(v, "yes") || equalsIgnoreCase(v, "no"))
             return CK_Bool;
     }
 
-    if((ch0 >= '0' && ch0 <= '9') || ch0 == '-' || ch0 == '+' || ch0 == '.') {
+    if((ch0 >= '0' && ch0 <= '9') || ch0 == '-' || ch0 == '+' || ch0 == '.')
+    {
         Date d;
-        if(parseDate(v, d)) return CK_Date;
-        if(looksLikeNumber(v)) return CK_Number;
+        if(parseDate(v, d))
+            return CK_Date;
+        if(looksLikeNumber(v))
+            return CK_Number;
         return CK_String;
     }
 
     Date d;
-    if(parseDate(v, d)) return CK_Date;
+    if(parseDate(v, d))
+        return CK_Date;
 
     return CK_String;
 }
 
-// ==============================
-// header lookup
-// ==============================
 std::optional<size_t> CSVParser::columnIndex(const std::string& name) const
 {
     std::string_view key(name);

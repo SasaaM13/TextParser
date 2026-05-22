@@ -13,12 +13,11 @@
 #include <algorithm>
 #include <cstdint>
 
-// ===================================================
-//   CSVParser
-// ===================================================
-class CSVParser final : public TextFileParser {
+class CSVParser final : public TextFileParser 
+{
 public:
-    struct Options {
+    struct Options 
+    {
         char delimiter = ',';
         bool hasHeader = false;
         bool allowQuotes = true;
@@ -46,7 +45,8 @@ public:
     std::optional<size_t> columnIndex(const std::string& name) const;
 
 private:
-    struct Buffer {
+    struct Buffer 
+    {
         const char* data = nullptr;
         size_t size = 0;
         bool mmapped = false;
@@ -61,7 +61,8 @@ private:
         ~Buffer() { release(); }
     };
 
-    struct CellSpan {
+    struct CellSpan 
+    {
         uint32_t off;
         uint32_t len;
     };
@@ -70,14 +71,9 @@ private:
     bool mapFile(Buffer& buf) const;
     bool readFileBuffered(Buffer& buf) const;
 
-    static void splitLineNoQuotes(std::string_view line, char delim,
-        std::vector<std::pair<size_t, size_t>>& spans);
-
-    static void splitLineQuotesFast(std::string_view line, char delim,
-        std::vector<std::pair<size_t, size_t>>& spans);
-
+    static void splitLineNoQuotes(std::string_view line, char delim, std::vector<std::pair<size_t, size_t>>& spans);
+    static void splitLineQuotesFast(std::string_view line, char delim, std::vector<std::pair<size_t, size_t>>& spans);
     static size_t findNextDelimOrNL_AVX2(const char* s, size_t pos, size_t n, char delim);
-
     static bool looksLikeNumber(std::string_view v);
     static bool equalsIgnoreCase(std::string_view a, std::string_view b);
 

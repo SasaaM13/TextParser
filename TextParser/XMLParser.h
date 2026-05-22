@@ -129,63 +129,14 @@ public:
     const std::vector<XMLNodeP>& nodesP() const { return nodesP_; }
 private:
     bool usingPointerDom() const { return opt_.usePointerDom; }
-    size_t textNodeCountFast() const
-    {
-        if(opt_.usePointerDom)
-        {
-            size_t c = 0;
-            for(const auto& n : nodesP_)
-                if(n.text) ++c;
-            return c;
-        }
-        else
-        {
-            size_t c = 0;
-            for(const auto& n : nodes_)
-                if(n.type == (uint32_t)XMLNodeType::Text)
-                    ++c;
-            return c;
-        }
-    }
-    size_t scanTextSizeFast() const
-    {
-        size_t total = 0;
-
-        if(opt_.usePointerDom)
-        {
-            for(const auto& n : nodesP_)
-            {
-                if(n.text)
-                {
-                    const char* p = n.text;
-                    while(*p++) ++total;
-                }
-            }
-        }
-        else
-        {
-            for(const auto& n : nodes_)
-            {
-                if(n.type == (uint32_t)XMLNodeType::Text)
-                    total += n.text.size();
-            }
-        }
-
-        return total;
-    }
     bool mapFile();
     void unmapFile();
     void reset();
 
-    bool parseDOMPointer();   // 🔥 fast
-    bool parseDOM();          // fallback
+    bool parseDOMPointer(); 
 
-    //size_t findNextLT(size_t pos) const;
     size_t findSeq(size_t from, std::string_view seq) const;
 
-    // pointer arena
-    //XMLNodeP* appendNodeP(XMLNodeP n);
-    //void appendChildP(XMLNodeP* p, XMLNodeP* c);
     inline uint32_t appendNodeP(
         const XMLNodeP& n)
     {
@@ -246,15 +197,8 @@ private:
 #else
     int fd_ = -1;
 #endif
-
-    // pointer DOM
     std::vector<XMLNodeP> nodesP_;
-
-    // fallback DOM
-    std::vector<XMLNode> nodes_;
-
     uint32_t rootIndex_ = 0;
-
     size_t elementCount_ = 0;
     friend class XMLValue;
 };

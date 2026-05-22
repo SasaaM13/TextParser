@@ -1133,10 +1133,6 @@ void testXML(const XMLParser& x)
 		}
 	}
 
-	// ==================================
-	// FAST RAW NODE TEST
-	// ==================================
-
 	size_t fastTextCount = 0;
 	size_t fastTextBytes = 0;
 	size_t fastElementCount = 0;
@@ -1366,8 +1362,6 @@ void TextParserUI::ParseFile(const std::string& filepath)
 							aBool.push_back(csv.toBool(i, j).value());
 						}
 					}
-					if(aStr.size() >= 50)
-						break;
 				}
 #endif
 				b.scanSecs = Measure([&]()
@@ -1496,35 +1490,67 @@ void TextParserUI::ParseFile(const std::string& filepath)
 				// =========================
 				// SCAN
 				// =========================
-				b.scanSecs = Measure([&]()
-					{
-						volatile size_t sink = 0;
-
-						for(int rep = 0; rep < repeat; ++rep)
+		// =========================
+// SCAN
+// =========================
+				b.scanSecs =
+					Measure([&]()
 						{
-							for(size_t i = 0; i < nodes.size(); ++i)
-							{
-								JSONValue v(&j, i);
+							volatile
+								size_t sink =
+								0;
 
-								if(v.isString())
+							const auto&
+								nodes =
+								j.nodes();
+
+							for(int rep = 0;
+								rep < repeat;
+								++rep)
+							{
+								for(const auto& n :
+									nodes)
 								{
-									sink += v.asStringView().size();
-								}
-								else if(v.isNumber())
-								{
-									sink += (size_t)v.asDouble();
-								}
-								else if(v.isBool())
-								{
-									sink += v.asBool();
-								}
-								else if(v.isNull())
-								{
-									sink += 1;
+									switch(
+										(JSONType)
+										n.type)
+									{
+									case JSONType::String:
+									{
+										sink +=
+											n.str.size();
+										break;
+									}
+
+									case JSONType::Number:
+									{
+										// avoid asDouble()
+										sink +=
+											n.raw.size();
+										break;
+									}
+
+									case JSONType::Bool:
+									{
+										sink +=
+											n.boolVal;
+										break;
+									}
+
+									case JSONType::Null:
+									{
+										sink +=
+											1;
+										break;
+									}
+
+									default:
+										break;
+									}
 								}
 							}
-						}
-					}) / repeat;
+						})
+					/ repeat;
 
 				b.valuesPerSec = values / safeTime(b.scanSecs);
 				b.mbPerSec = fileMB / safeTime(b.loadSecs + b.scanSecs);
