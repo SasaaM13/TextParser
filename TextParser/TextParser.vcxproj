@@ -184,7 +184,6 @@ C:\Users\Win\vcpkg\installed\x64-windows\include;
   <ItemGroup>
     <ClCompile Include="CSVParser.cpp" />
     <ClCompile Include="JSONParser.cpp" />
-    <ClCompile Include="TableAdapter.cpp" />
     <ClCompile Include="TextFileParser.cpp" />
     <ClCompile Include="TextParser.cpp" />
     <ClCompile Include="TextUIParser.cpp" />
@@ -196,7 +195,6 @@ C:\Users\Win\vcpkg\installed\x64-windows\include;
     <ClInclude Include="CSVParser.h" />
     <ClInclude Include="DateParser.h" />
     <ClInclude Include="JSONParser.h" />
-    <ClInclude Include="TableAdapter.h" />
     <ClInclude Include="TextFileParser.h" />
     <ClInclude Include="TextUIParser.h" />
     <ClInclude Include="Timer.h" />

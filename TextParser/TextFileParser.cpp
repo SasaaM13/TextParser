@@ -11,7 +11,6 @@ void TextFileParser::notifyLoaded()
     cacheInt_.clear();
     cacheDouble_.clear();
     cacheBool_.clear();
-
     seenInt_.clear();
     seenDouble_.clear();
     seenBool_.clear();
@@ -21,8 +20,10 @@ void TextFileParser::ensureStringCacheSize() const
     const size_t rows = rowCount();
     const size_t cols = colCount();
 
-    if(cols == 0 || rows == 0) return;
-    if(rows > std::numeric_limits<size_t>::max() / cols) return;
+    if(cols == 0 || rows == 0)
+        return;
+    if(rows > std::numeric_limits<size_t>::max() / cols)
+        return;
 
     const size_t total = rows * cols;
     if(cacheString_.size() != total)
@@ -34,12 +35,16 @@ void TextFileParser::ensureIntCacheSize() const
     const size_t rows = rowCount();
     const size_t cols = colCount();
 
-    if(cols == 0 || rows == 0) return;
-    if(rows > std::numeric_limits<size_t>::max() / cols) return;
+    if(cols == 0 || rows == 0)
+        return;
+    if(rows > std::numeric_limits<size_t>::max() / cols)
+        return;
 
     const size_t total = rows * cols;
-    if(cacheInt_.size() != total) cacheInt_.resize(total);
-    if(seenInt_.size() != total) seenInt_.assign(total, 0);
+    if(cacheInt_.size() != total)
+        cacheInt_.resize(total);
+    if(seenInt_.size() != total)
+        seenInt_.assign(total, 0);
 }
 
 void TextFileParser::ensureDoubleCacheSize() const
@@ -47,12 +52,16 @@ void TextFileParser::ensureDoubleCacheSize() const
     const size_t rows = rowCount();
     const size_t cols = colCount();
 
-    if(cols == 0 || rows == 0) return;
-    if(rows > std::numeric_limits<size_t>::max() / cols) return;
+    if(cols == 0 || rows == 0)
+        return;
+    if(rows > std::numeric_limits<size_t>::max() / cols)
+        return;
 
     const size_t total = rows * cols;
-    if(cacheDouble_.size() != total) cacheDouble_.resize(total);
-    if(seenDouble_.size() != total) seenDouble_.assign(total, 0);
+    if(cacheDouble_.size() != total)
+        cacheDouble_.resize(total);
+    if(seenDouble_.size() != total)
+        seenDouble_.assign(total, 0);
 }
 
 void TextFileParser::ensureBoolCacheSize() const
@@ -60,25 +69,26 @@ void TextFileParser::ensureBoolCacheSize() const
     const size_t rows = rowCount();
     const size_t cols = colCount();
 
-    if(cols == 0 || rows == 0) return;
-    if(rows > std::numeric_limits<size_t>::max() / cols) return;
+    if(cols == 0 || rows == 0)
+        return;
+    if(rows > std::numeric_limits<size_t>::max() / cols)
+        return;
 
     const size_t total = rows * cols;
-    if(cacheBool_.size() != total) cacheBool_.resize(total);
-    if(seenBool_.size() != total) seenBool_.assign(total, 0);
+    if(cacheBool_.size() != total)
+        cacheBool_.resize(total);
+    if(seenBool_.size() != total)
+        seenBool_.assign(total, 0);
 }
 
 std::optional<size_t> TextFileParser::keyChecked(size_t r, size_t c) const
 {
     const size_t rows = rowCount();
     const size_t cols = colCount();
-    if(r >= rows || c >= cols) return std::nullopt;
-
-    // overflow check for r*cols + c
-    if(cols != 0 && r > (std::numeric_limits<size_t>::max() - c) / cols)
-    {
+    if(r >= rows || c >= cols)
         return std::nullopt;
-    }
+    if(cols != 0 && r > (std::numeric_limits<size_t>::max() - c) / cols)
+        return std::nullopt;
     return r * cols + c;
 }
 
@@ -108,11 +118,11 @@ static bool ieq(std::string_view a, const char* b)
     {
         char ca = a[i];
         char cb = b[i];
-
-        if(cb == '\0') return false;
-
+        if(cb == '\0')
+            return false;
         if(ca >= 'A' && ca <= 'Z') ca += 32;
-        if(ca != cb) return false;
+        if(ca != cb)
+            return false;
     }
     return b[n] == '\0';
 }
@@ -164,9 +174,11 @@ std::optional<int> TextFileParser::toInt(size_t r, size_t c)
     const size_t k = *kOpt;
     ensureIntCacheSize();
     std::lock_guard<std::mutex> lock(cacheMutex_);
-    if(k >= cacheInt_.size()) return std::nullopt;
+    if(k >= cacheInt_.size())
+        return std::nullopt;
 
-    if(seenInt_[k]) return cacheInt_[k];
+    if(seenInt_[k])
+        return cacheInt_[k];
     seenInt_[k] = 1;
 
     int v;
@@ -230,6 +242,5 @@ std::optional<bool> TextFileParser::toBool(size_t r, size_t c, BoolFormat fmt)
         cacheBool_[k] = v;
     else
         cacheBool_[k] = std::nullopt;
-
     return cacheBool_[k];
 }

@@ -39,9 +39,6 @@
     <ClCompile Include="TextUIParser.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="TableAdapter.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\..\fast-cpp-csv-parser\csv.h">
@@ -69,9 +66,6 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="DateParser.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="TableAdapter.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

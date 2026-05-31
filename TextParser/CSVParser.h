@@ -73,7 +73,7 @@ private:
 
     static void splitLineNoQuotes(std::string_view line, char delim, std::vector<std::pair<size_t, size_t>>& spans);
     static void splitLineQuotesFast(std::string_view line, char delim, std::vector<std::pair<size_t, size_t>>& spans);
-    static size_t findNextDelimOrNL_AVX2(const char* s, size_t pos, size_t n, char delim);
+    static size_t findNextDelim(const char* s, size_t pos, size_t n, char delim);
     static bool looksLikeNumber(std::string_view v);
     static bool equalsIgnoreCase(std::string_view a, std::string_view b);
 

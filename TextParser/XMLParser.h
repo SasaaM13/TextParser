@@ -20,24 +20,15 @@
 #endif
 #include "DateParser.h"
 
-// ===================================================
-// Node types
-// ===================================================
-
 enum class XMLNodeType : uint32_t
 {
     Element,
     Text
 };
 
-// ===================================================
-// Standard node (fallback DOM)
-// ===================================================
-
 struct XMLNode
 {
     uint32_t type = 0;
-
     std::string_view name{};
     std::string_view text{};
 
@@ -45,10 +36,6 @@ struct XMLNode
     uint32_t firstChild = UINT32_MAX;
     uint32_t nextSibling = UINT32_MAX;
 };
-
-// ===================================================
-// POINTER NODE (turbo mode)
-// ===================================================
 
 struct XMLNodeP
 {
@@ -65,11 +52,6 @@ struct XMLNodeP
 };
 
 class XMLParser;
-
-// ===================================================
-// XMLValue wrapper
-// ===================================================
-
 class XMLValue
 {
 public:
@@ -87,8 +69,7 @@ public:
     XMLValue firstChild() const;
     XMLValue nextSibling() const;
     XMLValue child(std::string_view name) const;
-    std::string_view childText(
-        std::string_view name) const;
+    std::string_view childText(std::string_view name) const;
     std::optional<int> toInt() const;
     std::optional<double> toDouble() const;
     std::optional<bool> toBool() const;
@@ -98,10 +79,6 @@ private:
     const XMLParser* owner_ = nullptr;
     uint32_t idx_ = UINT32_MAX;
 };
-
-// ===================================================
-// Parser
-// ===================================================
 
 class XMLParser final : public TextFileParser
 {
@@ -115,12 +92,8 @@ public:
     ~XMLParser() { unmapFile(); }
 
     bool load() override;
-
     XMLValue rootValue() const { return XMLValue(this, rootIndex_); }
-
-    // stats
     size_t elementCount() const { return elementCount_; }
-
     const std::string& value(size_t, size_t) const override
     {
         static const std::string empty;
@@ -132,53 +105,34 @@ private:
     bool mapFile();
     void unmapFile();
     void reset();
-
     bool parseDOMPointer(); 
-
     size_t findSeq(size_t from, std::string_view seq) const;
 
-    inline uint32_t appendNodeP(
-        const XMLNodeP& n)
+    inline uint32_t appendNodeP(const XMLNodeP& n)
     {
         nodesP_.push_back(n);
-
-        return
-            (uint32_t)
-            (nodesP_.size() - 1);
+        return (uint32_t)(nodesP_.size() - 1);
     }
-
-    inline void appendChildP(
-        uint32_t parent,
-        uint32_t child)
+    inline void appendChildP(uint32_t parent, uint32_t child)
     {
-        auto& p =
-            nodesP_[parent];
-
-        if(p.firstChild ==
-            UINT32_MAX)
+        auto& p = nodesP_[parent];
+        if(p.firstChild == UINT32_MAX)
         {
-            p.firstChild =
-                child;
+            p.firstChild = child;
         }
         else
         {
-            nodesP_[p.lastChild]
-                .nextSibling =
-                child;
+            nodesP_[p.lastChild].nextSibling = child;
         }
 
-        p.lastChild =
-            child;
+        p.lastChild = child;
     }
 
     inline size_t findNextLT(size_t pos) const
     {
-        const void* hit =
-            std::memchr(data_ + pos, '<', size_ - pos);
-
+        const void* hit = std::memchr(data_ + pos, '<', size_ - pos);
         if(!hit)
             return size_t(-1);
-
         return (const char*)hit - data_;
     }
 
@@ -191,12 +145,8 @@ private:
     const char* end_ = nullptr;
     size_t size_ = 0;
 
-#ifdef _WIN32
     HANDLE hFile_ = INVALID_HANDLE_VALUE;
     HANDLE hMap_ = nullptr;
-#else
-    int fd_ = -1;
-#endif
     std::vector<XMLNodeP> nodesP_;
     uint32_t rootIndex_ = 0;
     size_t elementCount_ = 0;

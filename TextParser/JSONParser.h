@@ -12,13 +12,7 @@
 #include <cstring>
 #include <cstdint>
 
-#ifdef _WIN32
 #include <windows.h>
-#else
-#include <sys/mman.h>
-#include <fcntl.h>
-#include <unistd.h>
-#endif
 class JSONParser;
 
 enum class JSONType
@@ -85,9 +79,7 @@ public:
         bool allowBareValues = true;     
     };
 
-    explicit JSONParser(std::string filename, Options opt = {})
-        : filename_(std::move(filename)), opt_(opt) {
-    }
+    explicit JSONParser(std::string filename, Options opt = {}) : filename_(std::move(filename)), opt_(opt) {}
     ~JSONParser() {unmapFile();}
     bool load() override;
 

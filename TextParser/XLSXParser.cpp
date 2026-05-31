@@ -3,133 +3,79 @@
 #include <charconv>
 #include <zlib.h>
 
-#ifdef _WIN32
 #include <windows.h>
-#else
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <unistd.h>
-#endif
 #include "DateParser.h"
 
 inline Date excelDateToDate(int serial)
 {
     int z = serial + 693594;
+    int era =  (z >= 0 ? z : z - 146096) / 146097;
+    unsigned doe =  z - era * 146097;
+    unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
 
-    int era =
-        (z >= 0 ? z : z - 146096)
-        / 146097;
+    int y = (int)yoe + era * 400;
 
-    unsigned doe =
-        z - era * 146097;
-
-    unsigned yoe =
-        (doe - doe / 1460 +
-            doe / 36524 -
-            doe / 146096)
-        / 365;
-
-    int y =
-        (int)yoe + era * 400;
-
-    unsigned doy =
-        doe -
-        (365 * yoe +
-            yoe / 4 -
-            yoe / 100);
-
-    unsigned mp =
-        (5 * doy + 2) / 153;
-
-    unsigned d =
-        doy -
-        (153 * mp + 2) / 5 + 1;
-
-    unsigned m =
-        mp + (mp < 10 ? 3 : -9);
-
+    unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    unsigned mp = (5 * doy + 2) / 153;
+    unsigned d = doy - (153 * mp + 2) / 5 + 1;
+    unsigned m = mp + (mp < 10 ? 3 : -9);
     y += (m <= 2);
 
-    return {
-        y,
-        (int)m,
-        (int)d
-    };
+    return { y,(int)m, (int)d};
 }
 
 static const unsigned EOCD_SIG = 0x06054b50U;
 static const unsigned CEN_SIG = 0x02014b50U;
 static const unsigned LOC_SIG = 0x04034b50U;
 
-// ================= ctor/dtor =================
-XLSXParser::XLSXParser(std::string filename)
-    : filename_(std::move(filename)) {
+XLSXParser::XLSXParser(std::string filename) : filename_(std::move(filename))
+{
 }
 
-XLSXParser::~XLSXParser() {
+XLSXParser::~XLSXParser()
+{
     zip_.close();
 }
 
 void XLSXParser::MappedFile::close()
 {
-#ifdef _WIN32
-    if(base) UnmapViewOfFile(base);
-    if(hMap) CloseHandle((HANDLE)hMap);
-    if(hFile) CloseHandle((HANDLE)hFile);
+    if(base)
+        UnmapViewOfFile(base);
+    if(hMap)
+        CloseHandle((HANDLE)hMap);
+    if(hFile)
+        CloseHandle((HANDLE)hFile);
 
     base = nullptr;
     hMap = nullptr;
     hFile = nullptr;
     size = 0;
-#else
-    if(base) munmap((void*)base, size);
-
-    base = nullptr;
-    size = 0;
-#endif
 }
 
-// ================= mmap =================
 bool XLSXParser::mapZip()
 {
-#ifdef _WIN32
     HANDLE hFile = CreateFileA(filename_.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
-    if(hFile == INVALID_HANDLE_VALUE) return false;
+    if(hFile == INVALID_HANDLE_VALUE) 
+        return false;
 
     LARGE_INTEGER sz{};
     GetFileSizeEx(hFile, &sz);
 
     HANDLE hMap = CreateFileMappingA(hFile, nullptr, PAGE_READONLY, 0, 0, nullptr);
-    if(!hMap) return false;
+    if(!hMap)
+        return false;
 
     auto view = (const unsigned char*)MapViewOfFile(hMap, FILE_MAP_READ, 0, 0, 0);
-
     zip_.base = view;
     zip_.size = (size_t)sz.QuadPart;
     zip_.hFile = hFile;
     zip_.hMap = hMap;
-#else
-    int fd = open(filename_.c_str(), O_RDONLY);
-    if(fd < 0) return false;
-
-    struct stat sb {};
-    fstat(fd, &sb);
-
-    void* mem = mmap(nullptr, sb.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-    close(fd);
-
-    zip_.base = (const unsigned char*)mem;
-    zip_.size = sb.st_size;
-#endif
     return true;
 }
 
-// ================= zip index =================
 bool XLSXParser::buildZipIndex()
 {
     zipIndex_.clear();
-
     size_t size = zip_.size;
     const unsigned char* base = zip_.base;
 
@@ -139,12 +85,14 @@ bool XLSXParser::buildZipIndex()
 
     size_t eocd = -1;
 
-    for(size_t p = start; ; --p) {
+    for(size_t p = start; ; --p)
+    {
         if(le32(base + p) == EOCD_SIG) { eocd = p; break; }
         if(p == minp) break;
     }
 
-    if(eocd == (size_t)-1) return false;
+    if(eocd == (size_t)-1)
+        return false;
 
     const unsigned char* e = base + eocd;
     uint16_t entries = le16(e + 10);
@@ -152,8 +100,10 @@ bool XLSXParser::buildZipIndex()
 
     const unsigned char* cd = base + cd_off;
 
-    for(uint16_t i = 0; i < entries; ++i) {
-        if(le32(cd) != CEN_SIG) return false;
+    for(uint16_t i = 0; i < entries; ++i)
+    {
+        if(le32(cd) != CEN_SIG)
+            return false;
 
         uint16_t method = le16(cd + 10);
         uint32_t csize = le32(cd + 20);
@@ -180,21 +130,23 @@ bool XLSXParser::buildZipIndex()
     return true;
 }
 
-// ================= extract =================
 bool XLSXParser::extractEntry(const std::string& path, std::string& out) const
 {
     auto it = zipIndex_.find(path);
-    if(it == zipIndex_.end()) return false;
+    if(it == zipIndex_.end())
+        return false;
 
     const ZipEntry& z = it->second;
     const unsigned char* comp = zip_.base + z.dataOff;
 
-    if(z.method == 0) {
+    if(z.method == 0)
+    {
         out.assign((const char*)comp, z.usize);
         return true;
     }
 
-    if(z.method == 8) {
+    if(z.method == 8)
+    {
         out.resize(z.usize);
 
         z_stream zs{};
@@ -213,7 +165,6 @@ bool XLSXParser::extractEntry(const std::string& path, std::string& out) const
     return false;
 }
 
-// ================= open =================
 bool XLSXParser::open()
 {
     if(!mapZip())
@@ -221,151 +172,85 @@ bool XLSXParser::open()
 
     if(!buildZipIndex())
         return false;
-
     std::string wb;
 
-    if(!extractEntry(
-        "xl/workbook.xml",
-        wb))
-    {
+    if(!extractEntry("xl/workbook.xml",wb))
         return false;
-    }
-
     parseWorkbook(wb);
-
     std::string sst;
 
-    if(extractEntry(
-        "xl/sharedStrings.xml",
-        sst))
-    {
+    if(extractEntry("xl/sharedStrings.xml",sst))
         parseSharedStrings(sst);
-    }
 
     std::string styles;
 
-    if(extractEntry(
-        "xl/styles.xml",
-        styles))
-    {
+    if(extractEntry("xl/styles.xml",styles))
         parseStyles(styles);
-    }
 
     return true;
 }
 
-void XLSXParser::parseStyles(
-    const std::string& xml)
+void XLSXParser::parseStyles(const std::string& xml)
 {
     styleIsDate_.clear();
-
-    // ==========================
-    // Parse custom numFmt IDs
-    // ==========================
     std::unordered_map<int, bool> customFmtIsDate;
 
     const char* p = xml.data();
     const char* end = p + xml.size();
 
-    while((p = strstr(p, "<numFmt")) &&
-        p < end)
+    while((p = strstr(p, "<numFmt")) && p < end)
     {
-        const char* idPos =
-            strstr(p, "numFmtId=\"");
-
-        const char* codePos =
-            strstr(p, "formatCode=\"");
-
+        const char* idPos = strstr(p, "numFmtId=\"");
+        const char* codePos = strstr(p, "formatCode=\"");
         if(idPos && codePos)
         {
-            int id =
-                std::atoi(idPos + 11);
-
+            int id = std::atoi(idPos + 11);
             codePos += 12;
 
-            const char* q =
-                strchr(codePos, '"');
+            const char* q = strchr(codePos, '"');
 
             if(q)
             {
-                std::string fmt(
-                    codePos,
-                    q - codePos);
+                std::string fmt(codePos, q - codePos);
 
                 bool isDate = false;
 
-                // lowercase
                 for(char& c : fmt)
-                    c = (char)tolower(
-                        (unsigned char)c);
+                    c = (char)tolower((unsigned char)c);
 
-                // remove escaped chars
-                fmt.erase(
-                    std::remove(
-                        fmt.begin(),
-                        fmt.end(),
-                        '\\'),
-                    fmt.end());
-
-                // Excel date tokens
-                if(fmt.find('d') !=
-                    std::string::npos ||
-                    fmt.find('m') !=
-                    std::string::npos ||
-                    fmt.find('y') !=
-                    std::string::npos)
+                fmt.erase(std::remove(fmt.begin(), fmt.end(),'\\'), fmt.end());
+                if(fmt.find('d') != std::string::npos ||
+                    fmt.find('m') != std::string::npos ||
+                    fmt.find('y') != std::string::npos)
                 {
                     isDate = true;
                 }
-
-                customFmtIsDate[id] =
-                    isDate;
+                customFmtIsDate[id] = isDate;
             }
         }
 
         ++p;
     }
-
-    // ==========================
-    // Parse cellXfs styles
-    // ==========================
-    p = strstr(
-        xml.data(),
-        "<cellXfs");
-
+    p = strstr(xml.data(),"<cellXfs");
     if(!p)
         return;
-
     p = strchr(p, '>');
     if(!p)
         return;
-
     ++p;
-
-    const char* xfsEnd =
-        strstr(p,
-            "</cellXfs>");
+    const char* xfsEnd = strstr(p,"</cellXfs>");
 
     if(!xfsEnd)
         return;
 
-    while((p = strstr(p, "<xf")) &&
-        p < xfsEnd)
+    while((p = strstr(p, "<xf")) && p < xfsEnd)
     {
         bool isDate = false;
-
-        const char* numFmt =
-            strstr(
-                p,
-                "numFmtId=\"");
+        const char* numFmt =strstr(p, "numFmtId=\"");
 
         if(numFmt)
         {
-            int id =
-                std::atoi(
-                    numFmt + 11);
-
-            // built-in Excel date ids
+            int id = std::atoi(numFmt + 11);
             switch(id)
             {
             case 14:
@@ -385,77 +270,53 @@ void XLSXParser::parseStyles(
 
             default:
             {
-                auto it =
-                    customFmtIsDate
-                    .find(id);
+                auto it = customFmtIsDate.find(id);
 
-                if(it !=
-                    customFmtIsDate
-                    .end())
-                {
-                    isDate =
-                        it->second;
-                }
+                if(it != customFmtIsDate.end())
+                    isDate = it->second;
                 break;
             }
             }
         }
-
-#if TEST
-        printf(
-            "style[%zu] -> "
-            "isDate=%d\n",
-            styleIsDate_.size(),
-            (int)isDate);
-#endif
-
-        styleIsDate_
-            .push_back(
-                isDate);
-
+        styleIsDate_.push_back(isDate);
         ++p;
     }
 }
 
-bool XLSXParser::isDateStyle(
-    uint16_t style) const
+bool XLSXParser::isDateStyle(uint16_t style) const
 {
-    return style <
-        styleIsDate_.size()
-        && styleIsDate_[style];
+    return style <  styleIsDate_.size() && styleIsDate_[style];
 }
 
-// ================= load =================
 bool XLSXParser::load()
 {
-    if(sheets_.empty() && !open()) return false;
-
+    if(sheets_.empty() && !open())
+        return false;
     std::string xml;
-    if(!extractEntry(sheets_[currentSheet_].path, xml)) return false;
-
+    if(!extractEntry(sheets_[currentSheet_].path, xml))
+        return false;
     parseSheet(xml);
     return true;
 }
 
-// ================= workbook =================
 void XLSXParser::parseWorkbook(const std::string& xml)
 {
     sheets_.clear();
-
     const char* p = xml.data();
     const char* e = p + xml.size();
 
-    while(true) {
+    while(true) 
+    {
         const char* s = strstr(p, "<sheet");
-        if(!s) break;
-
+        if(!s)
+            break;
         const char* n = strstr(s, "name=\"");
-        if(!n) break;
-
+        if(!n) 
+            break;
         n += 6;
         const char* q = strchr(n, '"');
-        if(!q) break;
-
+        if(!q)
+            break;
         std::string name(n, q - n);
 
         int idx = (int)sheets_.size() + 1;
@@ -465,7 +326,6 @@ void XLSXParser::parseWorkbook(const std::string& xml)
     }
 }
 
-// ================= shared strings =================
 void XLSXParser::parseSharedStrings(const std::string& xml)
 {
     sharedBlob_.clear();
@@ -473,23 +333,25 @@ void XLSXParser::parseSharedStrings(const std::string& xml)
 
     const char* p = xml.data();
 
-    while(true) {
+    while(true)
+    {
         const char* si = strstr(p, "<si");
-        if(!si) break;
-
+        if(!si)
+            break;
         const char* end = strstr(si, "</si>");
-        if(!end) break;
+        if(!end)
+            break;
 
         uint32_t off = sharedBlob_.size();
 
         const char* t = si;
-        while(true) {
+        while(true) 
+        {
             const char* t1 = strstr(t, "<t");
-            if(!t1 || t1 >= end) break;
-
+            if(!t1 || t1 >= end)
+                break;
             const char* gt = strchr(t1, '>');
             const char* t2 = strstr(gt, "</t>");
-
             sharedBlob_.append(gt + 1, t2 - gt - 1);
             t = t2 + 4;
         }
@@ -499,96 +361,53 @@ void XLSXParser::parseSharedStrings(const std::string& xml)
     }
 }
 
-// ================= sheet =================
-void XLSXParser::parseSheet(
-    const std::string& xml)
+void XLSXParser::parseSheet(const std::string& xml)
 {
-    sheetXML_ =
-        xml;
-
-    const char* base =
-        sheetXML_.data();
-
-    const char* end =
-        base +
-        sheetXML_.size();
-
+    sheetXML_ =xml;
+    const char* base = sheetXML_.data();
+    const char* end = base + sheetXML_.size();
     rows_ = 0;
     cols_ = 0;
 
-    // ====================================
-    // PASS 1
-    // count rows + max cols
-    // ====================================
-    const char* p =
-        base;
-
+    const char* p = base;
     while(p < end)
     {
         if(*p == '<')
         {
-            // <row
-            if(p + 4 < end &&
-                p[1] == 'r' &&
-                p[2] == 'o' &&
-                p[3] == 'w' &&
-                (p[4] == ' ' ||
-                    p[4] == '>'))
+            if(p + 4 < end &&  p[1] == 'r' && p[2] == 'o' &&
+                p[3] == 'w' && (p[4] == ' ' || p[4] == '>'))
             {
                 ++rows_;
             }
-
-            // r="
-            if(p + 4 < end &&
-                p[1] == 'c' &&
-                p[2] == ' ')
+            if(p + 4 < end && p[1] == 'c' && p[2] == ' ')
             {
-                const char* s =
-                    p;
+                const char* s = p;
 
-                while(s < end &&
-                    *s != '>')
+                while(s < end && *s != '>')
                 {
-                    if(*s == ' ' &&
-                        s + 4 < end &&
-                        s[1] == 'r' &&
-                        s[2] == '=' &&
-                        s[3] == '"')
+                    if(*s == ' ' && s + 4 < end && s[1] == 'r' &&
+                        s[2] == '=' && s[3] == '"')
                     {
                         s += 4;
+                        int col = 0;
 
-                        int col =
-                            0;
-
-                        while(s < end &&
-                            *s >= 'A' &&
-                            *s <= 'Z')
+                        while(s < end && *s >= 'A' && *s <= 'Z')
                         {
-                            col =
-                                col * 26 +
-                                (*s - 'A' + 1);
-
+                            col = col * 26 + (*s - 'A' + 1);
                             ++s;
                         }
 
-                        if(col >
-                            (int)cols_)
-                        {
-                            cols_ =
-                                col;
-                        }
-
+                        if(col > (int)cols_)
+                            cols_ = col;
+                        
                         break;
                     }
-
                     ++s;
                 }
             }
         }
-
         ++p;
     }
-
     if(rows_ == 0)
     {
         cells_.clear();
@@ -598,34 +417,17 @@ void XLSXParser::parseSheet(
     if(cols_ == 0)
         cols_ = 1;
 
-    cells_.assign(
-        rows_ * cols_,
-        CellRef{});
+    cells_.assign( rows_ * cols_, CellRef{});
 
-    // ====================================
-    // PASS 2
-    // parse rows/cells
-    // ====================================
     p = base;
 
-    size_t currentRow =
-        0;
+    size_t currentRow = 0;
 
     while(p < end)
     {
-        // ---------------------------
-        // find <row
-        // ---------------------------
-        while(p < end &&
-            !(
-                *p == '<' &&
-                p + 4 < end &&
-                p[1] == 'r' &&
-                p[2] == 'o' &&
-                p[3] == 'w' &&
-                (p[4] == ' ' ||
-                    p[4] == '>')
-                ))
+        while(p < end && !(*p == '<' && p + 4 < end &&
+                p[1] == 'r' && p[2] == 'o' &&  p[3] == 'w' &&
+                (p[4] == ' ' ||  p[4] == '>')))
         {
             ++p;
         }
@@ -633,341 +435,162 @@ void XLSXParser::parseSheet(
         if(p >= end)
             break;
 
-        const char* rowEnd =
-            strstr(
-                p,
-                "</row>");
-
+        const char* rowEnd = strstr(p, "</row>");
         if(!rowEnd)
             break;
-
-        const char* c =
-            p;
+        const char* c = p;
 
         while(c < rowEnd)
         {
-            // ---------------------------
-            // find <c
-            // ---------------------------
-            while(c < rowEnd &&
-                !(
-                    *c == '<' &&
-                    c + 2 < rowEnd &&
-                    c[1] == 'c' &&
-                    (c[2] == ' ' ||
-                        c[2] == '>')
-                    ))
+            while(c < rowEnd && !(*c == '<' && c + 2 < rowEnd &&
+                    c[1] == 'c' && (c[2] == ' ' || c[2] == '>')))
             {
                 ++c;
             }
-
             if(c >= rowEnd)
                 break;
 
-            const char* tagEnd =
-                c;
+            const char* tagEnd = c;
 
-            while(tagEnd <
-                rowEnd &&
-                *tagEnd != '>')
-            {
-                ++tagEnd;
-            }
-
+            while(tagEnd < rowEnd && *tagEnd != '>')
+                ++tagEnd;            
             if(tagEnd >= rowEnd)
                 break;
 
-            bool selfClosing =
-                (*(tagEnd - 1)
-                    == '/');
+            bool selfClosing =(*(tagEnd - 1) == '/');
 
-            // ---------------------------
-            // attrs
-            // ---------------------------
             int col = 0;
-
-            bool isShared =
-                false;
-
-            bool isBool =
-                false;
-
-            bool isInline =
-                false;
-
-            uint16_t style =
-                0;
-
-            const char* s =
-                c;
+            bool isShared = false;
+            bool isBool = false;
+            bool isInline = false;
+            uint16_t style = 0;
+            const char* s = c;
 
             while(s < tagEnd)
             {
-                // r="
-                if(*s == ' ' &&
-                    s + 4 < tagEnd &&
-                    s[1] == 'r' &&
-                    s[2] == '=' &&
-                    s[3] == '"')
+                if(*s == ' ' && s + 4 < tagEnd &&
+                    s[1] == 'r' && s[2] == '=' && s[3] == '"')
                 {
                     s += 4;
-
-                    while(s < tagEnd &&
-                        *s >= 'A' &&
-                        *s <= 'Z')
+                    while(s < tagEnd && *s >= 'A' && *s <= 'Z')
                     {
-                        col =
-                            col * 26 +
-                            (*s - 'A' + 1);
-
+                        col = col * 26 + (*s - 'A' + 1);
                         ++s;
                     }
-
                     continue;
                 }
 
-                // t="
-                if(*s == ' ' &&
-                    s + 4 < tagEnd &&
-                    s[1] == 't' &&
-                    s[2] == '=' &&
-                    s[3] == '"')
+                if(*s == ' ' && s + 4 < tagEnd && s[1] == 't' &&
+                    s[2] == '=' && s[3] == '"')
                 {
                     s += 4;
-
                     if(*s == 's')
-                    {
-                        isShared =
-                            true;
-                    }
+                        isShared = true;
                     else if(*s == 'b')
-                    {
-                        isBool =
-                            true;
-                    }
-                    else if(
-                        std::strncmp(
-                            s,
-                            "inlineStr",
-                            9) == 0)
-                    {
-                        isInline =
-                            true;
-                    }
-
+                        isBool = true;
+                    else if(std::strncmp(s, "inlineStr", 9) == 0)
+                        isInline = true;
                     continue;
                 }
-
-                // s="
-                if(*s == ' ' &&
-                    s + 4 < tagEnd &&
-                    s[1] == 's' &&
-                    s[2] == '=' &&
-                    s[3] == '"')
+                if(*s == ' ' && s + 4 < tagEnd &&
+                    s[1] == 's' && s[2] == '=' && s[3] == '"')
                 {
                     s += 4;
-
-                    style =
-                        (uint16_t)
-                        std::atoi(s);
-
+                    style = (uint16_t)std::atoi(s);
                     continue;
                 }
-
                 ++s;
             }
-
             if(col <= 0)
             {
-                c =
-                    tagEnd + 1;
-
+                c = tagEnd + 1;
                 continue;
             }
 
-            size_t currentCol =
-                (size_t)
-                (col - 1);
-
+            size_t currentCol = (size_t) (col - 1);
             if(!selfClosing)
             {
-                const char* cEnd =
-                    strstr(
-                        tagEnd,
-                        "</c>");
-
-                if(!cEnd ||
-                    cEnd > rowEnd)
-                {
+                const char* cEnd = strstr(tagEnd, "</c>");
+                if(!cEnd || cEnd > rowEnd)
                     break;
-                }
-
-                const char* v1 =
-                    nullptr;
-
-                const char* v2 =
-                    nullptr;
-
+                const char* v1 = nullptr;
+                const char* v2 = nullptr;
                 if(isInline)
                 {
-                    const char* t =
-                        strstr(
-                            tagEnd,
-                            "<t>");
-
-                    if(t &&
-                        t < cEnd)
+                    const char* t = strstr(tagEnd, "<t>");
+                    if(t && t < cEnd)
                     {
-                        v1 =
-                            t + 3;
-
-                        v2 =
-                            strstr(
-                                v1,
-                                "</t>");
+                        v1 = t + 3;
+                        v2 = strstr(v1, "</t>");
                     }
                 }
                 else
                 {
-                    const char* v =
-                        strstr(
-                            tagEnd,
-                            "<v>");
-
-                    if(v &&
-                        v < cEnd)
+                    const char* v = strstr(tagEnd, "<v>");
+                    if(v && v < cEnd)
                     {
-                        v1 =
-                            v + 3;
-
-                        v2 =
-                            strstr(
-                                v1,
-                                "</v>");
+                        v1 = v + 3;
+                        v2 = strstr(v1, "</v>");
                     }
                 }
 
-                if(v1 &&
-                    v2 &&
-                    currentRow <
-                    rows_ &&
-                    currentCol <
-                    cols_)
+                if(v1 && v2 && currentRow < rows_ && currentCol < cols_)
                 {
-                    CellRef& cr =
-                        cells_[
-                            idx(
-                                currentRow,
-                                currentCol)];
-
-                    cr.style =
-                        style;
-
+                    CellRef& cr = cells_[idx(currentRow, currentCol)];
+                    cr.style = style;
                     if(isShared)
                     {
-                        cr.kind =
-                            CK_String;
-
-                        cr.sst =
-                            (uint32_t)
-                            std::strtoul(
-                                v1,
-                                nullptr,
-                                10);
+                        cr.kind = CK_String;
+                        cr.sst = (uint32_t)std::strtoul(v1, nullptr, 10);
                     }
-                    else if(
-                        isBool)
+                    else if(isBool)
                     {
-                        cr.kind =
-                            CK_Bool;
-
-                        cr.off =
-                            (uint32_t)
-                            (v1 - base);
-
-                        cr.len =
-                            (uint32_t)
-                            (v2 - v1);
+                        cr.kind = CK_Bool;
+                        cr.off = (uint32_t)(v1 - base);
+                        cr.len = (uint32_t) (v2 - v1);
                     }
                     else
                     {
-                        cr.off =
-                            (uint32_t)
-                            (v1 - base);
-
-                        cr.len =
-                            (uint32_t)
-                            (v2 - v1);
-
-                        cr.kind =
-                            looksLikeNumber(
-                                std::string_view(
-                                    v1,
-                                    v2 - v1))
-                            ? CK_Number
-                            : CK_String;
+                        cr.off = (uint32_t) (v1 - base);
+                        cr.len = (uint32_t) (v2 - v1);
+                        cr.kind = looksLikeNumber(std::string_view(v1, v2 - v1)) ? CK_Number : CK_String;
                     }
                 }
 
-                c =
-                    cEnd + 4;
+                c = cEnd + 4;
             }
-            else
-            {
-                c =
-                    tagEnd + 1;
-            }
+            else 
+                c =  tagEnd + 1;
         }
 
         ++currentRow;
-
-        p =
-            rowEnd + 6;
+        p = rowEnd + 6;
     }
 
-    // ====================================
-    // COLUMN NAMES
-    // ====================================
     colNames_.clear();
-    colNames_.reserve(
-        cols_);
+    colNames_.reserve(cols_);
 
     if(rows_ > 0)
     {
-        for(size_t c = 0;
-            c < cols_;
-            ++c)
+        for(size_t c = 0; c < cols_; ++c)
         {
-            auto v =
-                valueView(
-                    0,
-                    c);
-
+            auto v = valueView(0,c);
             if(v.empty())
-            {
-                colNames_
-                    .push_back(
-                        "Column" +
-                        std::to_string(
-                            c + 1));
-            }
+                colNames_.push_back("Column" + std::to_string(c + 1));
             else
-            {
-                colNames_
-                    .emplace_back(
-                        v);
-            }
+                colNames_.emplace_back(v);
         }
     }
 }
-// ================= value =================
+
 std::string_view XLSXParser::valueView(size_t r, size_t c) const
 {
-    if(r >= rows_ || c >= cols_) return {};
+    if(r >= rows_ || c >= cols_) 
+        return {};
 
     const CellRef& cr = cells_[idx(r, c)];
-
-    if(cr.kind == CK_String && cr.sst < sharedRefs_.size()) {
+    if(cr.kind == CK_String && cr.sst < sharedRefs_.size())
+    {
         auto& s = sharedRefs_[cr.sst];
         return std::string_view(sharedBlob_.data() + s.off, s.len);
     }
@@ -975,27 +598,14 @@ std::string_view XLSXParser::valueView(size_t r, size_t c) const
     return std::string_view(sheetXML_.data() + cr.off, cr.len);
 }
 
-const std::string&
-XLSXParser::value(
-    size_t r,
-    size_t c) const
+const std::string& XLSXParser::value(size_t r, size_t c) const
 {
-    static thread_local
-        std::string tmp;
-
-    auto v =
-        valueView(
-            r,
-            c);
-
-    tmp.assign(
-        v.data(),
-        v.size());
-
+    static thread_local std::string tmp;
+    auto v = valueView(r,c);
+    tmp.assign(v.data(), v.size());
     return tmp;
 }
 
-// ================= utils =================
 uint32_t XLSXParser::le32(const unsigned char* p)
 {
     return p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24);
@@ -1008,32 +618,26 @@ uint16_t XLSXParser::le16(const unsigned char* p)
 
 bool XLSXParser::equalsIgnoreCase(std::string_view a, std::string_view b)
 {
-    if(a.size() != b.size()) return false;
+    if(a.size() != b.size()) 
+        return false;
     for(size_t i = 0; i < a.size(); ++i)
-        if((a[i] | 32) != (b[i] | 32)) return false;
+        if((a[i] | 32) != (b[i] | 32))
+            return false;
     return true;
 }
 
-TextFileParser::CellKind
-XLSXParser::cellKind(
-    size_t r,
-    size_t c) const
+TextFileParser::CellKind XLSXParser::cellKind(size_t r,size_t c) const
 {
     auto v = value(r, c);
 
     if(v.empty())
         return CK_Empty;
 
-    if(equalsIgnoreCase(v, "null") ||
-        equalsIgnoreCase(v, "nan"))
-    {
+    if(equalsIgnoreCase(v, "null") || equalsIgnoreCase(v, "nan"))
         return CK_Empty;
-    }
 
-    if(equalsIgnoreCase(v, "true") ||
-        equalsIgnoreCase(v, "false") ||
-        equalsIgnoreCase(v, "yes") ||
-        equalsIgnoreCase(v, "no"))
+    if(equalsIgnoreCase(v, "true") || equalsIgnoreCase(v, "false") ||
+        equalsIgnoreCase(v, "yes") || equalsIgnoreCase(v, "no"))
     {
         return CK_Bool;
     }
@@ -1041,15 +645,14 @@ XLSXParser::cellKind(
     Date date;
     if(parseDate(v, date))
         return CK_Date;
-
     if(looksLikeNumber(v))
         return CK_Number;
-
     return CK_String;
 }
 bool XLSXParser::looksLikeNumber(std::string_view v)
 {
-    if(v.empty()) return false;
+    if(v.empty())
+        return false;
 
     bool digit = false;
     bool dot = false;
@@ -1058,7 +661,6 @@ bool XLSXParser::looksLikeNumber(std::string_view v)
     for(size_t i = 0; i < v.size(); ++i)
     {
         char c = v[i];
-
         if(c >= '0' && c <= '9')
         {
             digit = true;
@@ -1067,14 +669,16 @@ bool XLSXParser::looksLikeNumber(std::string_view v)
 
         if(c == '.')
         {
-            if(dot || exp) return false;
+            if(dot || exp) 
+                return false;
             dot = true;
             continue;
         }
 
         if(c == 'e' || c == 'E')
         {
-            if(exp || !digit) return false;
+            if(exp || !digit) 
+                return false;
             exp = true;
             digit = false;
             continue;
@@ -1082,8 +686,10 @@ bool XLSXParser::looksLikeNumber(std::string_view v)
 
         if(c == '-' || c == '+')
         {
-            if(i == 0) continue;
-            if(v[i - 1] == 'e' || v[i - 1] == 'E') continue;
+            if(i == 0) 
+                continue;
+            if(v[i - 1] == 'e' || v[i - 1] == 'E')
+                continue;
             return false;
         }
 

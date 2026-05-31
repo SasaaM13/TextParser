@@ -1,5 +1,4 @@
-﻿// TextFileParser.h
-#pragma once
+﻿#pragma once
 #include <string>
 #include <vector>
 #include <optional>
@@ -8,7 +7,8 @@
 #include <mutex>
 #include <limits>
 
-struct DataNode {
+struct DataNode 
+{
     std::string name;               
     std::string value;              
     std::vector<DataNode> children; 
@@ -44,21 +44,20 @@ public:
     virtual size_t rowCount() const { return 0; }
     virtual size_t colCount() const { return 0; }
 
-    virtual std::string_view valueView(size_t /*row*/, size_t /*col*/) const 
+    virtual std::string_view valueView(size_t, size_t) const 
     {
         static constexpr std::string_view empty{};
         return empty;
     }
 
-    virtual CellKind cellKind(size_t row, size_t col) const {
+    virtual CellKind cellKind(size_t row, size_t col) const 
+    {
         auto v = valueView(row, col);
         return v.empty() ? CellKind::CK_Empty : CellKind::CK_String;
     }
 
     virtual const std::string& value(size_t row, size_t col) const = 0;
-
     virtual const DataNode& root() const { return root_; }
-
     virtual std::string getColName(size_t index) const
     {
         if(index < colNames_.size())
@@ -66,17 +65,12 @@ public:
         static const std::string empty;
         return empty;
     }
-
     virtual const std::vector<std::string>& getColNames() const { return colNames_; }
 
-    std::optional<int>    toInt(size_t row, size_t col);
+    std::optional<int> toInt(size_t row, size_t col);
     std::optional<double> toDouble(size_t row, size_t col);
 
-    static constexpr BoolFormat DefaultBoolFmt =
-        static_cast<BoolFormat>(
-            static_cast<uint8_t>(BoolFormat::TRUE_FALSE) |
-            static_cast<uint8_t>(BoolFormat::YES_NO));
-
+    static constexpr BoolFormat DefaultBoolFmt = static_cast<BoolFormat>(static_cast<uint8_t>(BoolFormat::TRUE_FALSE) | static_cast<uint8_t>(BoolFormat::YES_NO));
     std::optional<bool> toBool(size_t row, size_t col, BoolFormat fmt = DefaultBoolFmt);
 
 protected:
@@ -102,6 +96,5 @@ protected:
     mutable std::vector<uint8_t> seenInt_; //TODO:remove
     mutable std::vector<uint8_t> seenDouble_;
     mutable std::vector<uint8_t> seenBool_; 
-
     std::optional<size_t> keyChecked(size_t r, size_t c) const;
 };

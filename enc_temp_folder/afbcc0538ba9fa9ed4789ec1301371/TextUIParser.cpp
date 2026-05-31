@@ -901,8 +901,10 @@ void testJSON(const JSONParser& j)
 void testXML(const XMLParser& x)
 {
 	auto root = x.rootValue();
+
 	if(!root.valid())
 		return;
+
 	std::vector<std::string> texts;
 	std::vector<std::string> names;
 	std::vector<size_t> childCounts;
@@ -1822,7 +1824,6 @@ void TextParserUI::ParseFile(const std::string& filepath)
 		setDouble(3, total, 4);
 		setDouble(4, b.mbPerSec, 3);
 		//setUInt64(5, b.valuesPerSec);
-
 		idx++;
 	}
 

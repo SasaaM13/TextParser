@@ -5,33 +5,20 @@
 #include <cstring>
 #include <filesystem>
 #include <limits>
-
-#ifdef _WIN32
-#define NOMINMAX
 #include <windows.h>
-
-#else
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <unistd.h>
-#endif
-
-#if defined(__AVX2__) || (defined(_MSC_VER) && defined(__AVX2__))
-#include <immintrin.h>
-#define CSV_HAS_AVX2 1
-#else
-#define CSV_HAS_AVX2 0
-#endif
 
 static inline size_t trimCRandSemisLen(const char* base, size_t off, size_t len)
 {
-    if(len == 0) return 0;
+    if(len == 0) 
+        return 0;
     size_t n = len;
 
-    if(n && base[off + n - 1] == '\r') --n;
-    if(n && base[off + n - 1] == ';') --n;
-    if(n && base[off + n - 1] == ';') --n;
+    if(n && base[off + n - 1] == '\r')
+        --n;
+    if(n && base[off + n - 1] == ';')
+        --n;
+    if(n && base[off + n - 1] == ';')
+        --n;
 
     return n;
 }
@@ -50,7 +37,6 @@ void CSVParser::resetState()
 
 void CSVParser::Buffer::release()
 {
-#ifdef _WIN32
     if(data && mmapped)
         UnmapViewOfFile(data);
     if(hMap)
@@ -62,22 +48,11 @@ void CSVParser::Buffer::release()
     mmapped = false;
     hFile = nullptr; 
     hMap = nullptr;
-#else
-    if(data && mmapped)
-        munmap((void*)data, size);
-    if(fd >= 0)
-        close(fd);
-    data = nullptr;
-    size = 0;
-    mmapped = false;
-    fd = -1;
-#endif
     owned.clear();
 }
 
 bool CSVParser::mapFile(Buffer& buf) const
 {
-#ifdef _WIN32
     HANDLE hFile = CreateFileA(filename_.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if(hFile == INVALID_HANDLE_VALUE)
         return false;
@@ -114,35 +89,6 @@ bool CSVParser::mapFile(Buffer& buf) const
     buf.hFile = hFile;
     buf.hMap = hMap;
     return true;
-#else
-    int fd = open(filename_.c_str(), O_RDONLY);
-    if(fd < 0) return false;
-
-    struct stat sb {};
-    if(fstat(fd, &sb) < 0)
-    { 
-        close(fd);
-        return false;
-    }
-    if(sb.st_size == 0) 
-    { 
-        close(fd);
-        return false;
-    }
-
-    void* mem = mmap(nullptr, (size_t)sb.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-    if(mem == MAP_FAILED) 
-    { 
-        close(fd);
-        return false;
-    }
-
-    buf.data = (const char*)mem;
-    buf.size = (size_t)sb.st_size;
-    buf.mmapped = true;
-    buf.fd = fd;
-    return true;
-#endif
 }
 
 bool CSVParser::readFileBuffered(Buffer& buf) const
@@ -150,7 +96,6 @@ bool CSVParser::readFileBuffered(Buffer& buf) const
     std::FILE* f = std::fopen(filename_.c_str(), "rb");
     if(!f) 
         return false;
-
     size_t size = 0;
     try 
     { 
@@ -214,37 +159,11 @@ void CSVParser::splitLineQuotesFast(std::string_view line, char delim, std::vect
     spans.emplace_back(start, n - start);
 }
 
-size_t CSVParser::findNextDelimOrNL_AVX2(const char* s, size_t pos, size_t n, char delim)
+size_t CSVParser::findNextDelim(const char* s, size_t pos, size_t n, char delim)
 {
-#if CSV_HAS_AVX2
-    const __m256i vDelim = _mm256_set1_epi8(delim);
-    const __m256i vNL = _mm256_set1_epi8('\n');
-
-    size_t i = pos;
-    for(; i + 32 <= n; i += 32) 
-    {
-        __m256i chunk = _mm256_loadu_si256((const __m256i*)(s + i));
-        __m256i m = _mm256_or_si256(_mm256_cmpeq_epi8(chunk, vDelim), _mm256_cmpeq_epi8(chunk, vNL));
-        int mask = _mm256_movemask_epi8(m);
-        if(mask)
-        {
-#ifdef _WIN32
-            unsigned long idx;
-            _BitScanForward(&idx, (unsigned long)mask);
-#else
-            unsigned idx = __builtin_ctz((unsigned)mask);
-#endif
-            return i + idx;
-        }
-    }
-    for(; i < n; ++i)
-        if(s[i] == delim || s[i] == '\n') return i;
-    return n;
-#else
     for(size_t i = pos; i < n; ++i)
         if(s[i] == delim || s[i] == '\n') return i;
     return n;
-#endif
 }
 
 bool CSVParser::equalsIgnoreCase(std::string_view a, std::string_view b)
@@ -298,33 +217,17 @@ bool CSVParser::looksLikeNumber(std::string_view v)
     return i == v.size();
 }
 
-static inline size_t count_newlines_fast(const char* s, size_t n)
+static inline size_t count_newlines(const char* s, size_t n)
 {
     size_t cnt = 0;
-#if CSV_HAS_AVX2
-    const __m256i vNL = _mm256_set1_epi8('\n');
-    size_t i = 0;
-
-    for(; i + 32 <= n; i += 32)
-    {
-        __m256i chunk = _mm256_loadu_si256((const __m256i*)(s + i));
-        __m256i cmp = _mm256_cmpeq_epi8(chunk, vNL);
-        cnt += (size_t)__builtin_popcount((unsigned)_mm256_movemask_epi8(cmp));
-    }
-
-    for(; i < n; ++i)
-        cnt += (s[i] == '\n');
-#else
     for(size_t i = 0; i < n; ++i)
         cnt += (s[i] == '\n');
-#endif
     return cnt;
 }
 
 bool CSVParser::load()
 {
     resetState();
-
     backing_ = std::make_unique<Buffer>();
     bool ok = opts_.useMMap && mapFile(*backing_);
     if(!ok)
@@ -340,7 +243,7 @@ bool CSVParser::load()
 		return true;
 	}
 
-    const size_t nlCount = count_newlines_fast(s, n);
+    const size_t nlCount = count_newlines(s, n);
     const size_t estimatedRows = nlCount + ((n > 0 && s[n - 1] != '\n') ? 1 : 0);
     size_t firstEnd = 0;
     while(firstEnd < n && s[firstEnd] != '\n')
@@ -403,13 +306,9 @@ bool CSVParser::load()
 
         while(pos < n)
         {
-#if CSV_HAS_AVX2
-            _mm_prefetch(s + pos + 256, _MM_HINT_T0);
-#endif
-
-            size_t next = findNextDelimOrNL_AVX2(s, pos, n, opts_.delimiter);
-            if(next >= n) break;
-
+            size_t next = findNextDelim(s, pos, n, opts_.delimiter);
+            if(next >= n)
+                break;
             char ch = s[next];
 
             uint32_t off = (uint32_t)cellStart;
@@ -419,9 +318,7 @@ bool CSVParser::load()
                 len = (uint32_t)trimCRandSemisLen(s, off, len);
 
             if(c < cols_)
-            {
                 cells_[writeIdx + c] = CellSpan{ off, len };
-            }
             ++c;
 
             if(ch == '\n')
@@ -430,7 +327,6 @@ bool CSVParser::load()
                 ++r;
                 c = 0;
             }
-
             cellStart = next + 1;
             pos = next + 1;
         }
@@ -443,13 +339,9 @@ bool CSVParser::load()
 
         if(opts_.trimLastColumnCRSemis && c == cols_ - 1)
             len = (uint32_t)trimCRandSemisLen(s, off, len);
-
         if(c < cols_)
-        {
             cells_[writeIdx + c] = CellSpan{ off, len };
-        }
         ++c;
-
         writeIdx += cols_;
         ++r;
         c = 0;
@@ -473,7 +365,6 @@ std::string_view CSVParser::valueView(size_t r, size_t c) const
         return {};
 
     const auto& sp = cells_[idx];
-
     if(sp.len == 0 || !backing_)
         return {};
 
@@ -483,14 +374,12 @@ std::string_view CSVParser::valueView(size_t r, size_t c) const
 const std::string& CSVParser::value(size_t r, size_t c) const
 {
     static const std::string empty;
-
     if(r >= rows_ || c >= cols_)
         return empty;
     if(cols_ && r > SIZE_MAX / cols_)
         return empty;
 
     ensureStringCacheSize();
-
     const size_t k = r * cols_ + c;
     if(k >= cacheString_.size())
         return empty;
@@ -548,12 +437,10 @@ TextFileParser::CellKind CSVParser::cellKind(size_t r, size_t c) const
 std::optional<size_t> CSVParser::columnIndex(const std::string& name) const
 {
     std::string_view key(name);
-
     auto it = std::lower_bound(headerIndex_.begin(), headerIndex_.end(), key,
         [](const auto& a, std::string_view b) { return a.first < b; });
 
     if(it != headerIndex_.end() && it->first == key)
         return it->second;
-
     return std::nullopt;
 }
