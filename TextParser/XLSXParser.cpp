@@ -87,8 +87,13 @@ bool XLSXParser::buildZipIndex()
 
     for(size_t p = start; ; --p)
     {
-        if(le32(base + p) == EOCD_SIG) { eocd = p; break; }
-        if(p == minp) break;
+        if(le32(base + p) == EOCD_SIG) 
+        { 
+            eocd = p; 
+            break; 
+        }
+        if(p == minp)
+            break;
     }
 
     if(eocd == (size_t)-1)
@@ -121,9 +126,7 @@ bool XLSXParser::buildZipIndex()
         uint16_t lh_x = le16(loc + 28);
 
         size_t dataOff = lhofs + 30 + lh_n + lh_x;
-
         zipIndex_[name] = { method, csize, usize, (uint32_t)dataOff };
-
         cd += 46 + nlen + xlen + clen;
     }
 
@@ -374,11 +377,13 @@ void XLSXParser::parseSheet(const std::string& xml)
     {
         if(*p == '<')
         {
+            //<row>
             if(p + 4 < end &&  p[1] == 'r' && p[2] == 'o' &&
                 p[3] == 'w' && (p[4] == ' ' || p[4] == '>'))
             {
                 ++rows_;
             }
+            //<c r="A1" t="s" <v>0</v></c>
             if(p + 4 < end && p[1] == 'c' && p[2] == ' ')
             {
                 const char* s = p;
@@ -618,11 +623,24 @@ uint16_t XLSXParser::le16(const unsigned char* p)
 
 bool XLSXParser::equalsIgnoreCase(std::string_view a, std::string_view b)
 {
-    if(a.size() != b.size()) 
+    if(a.size() != b.size())
         return false;
+
     for(size_t i = 0; i < a.size(); ++i)
-        if((a[i] | 32) != (b[i] | 32))
+    {
+        char ca = a[i];
+        char cb = b[i];
+
+        if(ca >= 'A' && ca <= 'Z')
+            ca += 32;
+
+        if(cb >= 'A' && cb <= 'Z')
+            cb += 32;
+
+        if(ca != cb)
             return false;
+    }
+
     return true;
 }
 

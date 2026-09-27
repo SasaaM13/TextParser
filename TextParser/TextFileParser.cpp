@@ -120,7 +120,8 @@ static bool ieq(std::string_view a, const char* b)
         char cb = b[i];
         if(cb == '\0')
             return false;
-        if(ca >= 'A' && ca <= 'Z') ca += 32;
+        if(ca >= 'A' && ca <= 'Z')
+            ca += 32;
         if(ca != cb)
             return false;
     }

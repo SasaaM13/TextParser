@@ -19,7 +19,6 @@ static inline size_t trimCRandSemisLen(const char* base, size_t off, size_t len)
         --n;
     if(n && base[off + n - 1] == ';')
         --n;
-
     return n;
 }
 
@@ -162,7 +161,8 @@ void CSVParser::splitLineQuotesFast(std::string_view line, char delim, std::vect
 size_t CSVParser::findNextDelim(const char* s, size_t pos, size_t n, char delim)
 {
     for(size_t i = pos; i < n; ++i)
-        if(s[i] == delim || s[i] == '\n') return i;
+        if(s[i] == delim || s[i] == '\n')
+            return i;
     return n;
 }
 
@@ -201,7 +201,8 @@ bool CSVParser::looksLikeNumber(std::string_view v)
             any = true;
     }
 
-    if(!any) return false;
+    if(!any)
+        return false;
 
     if(i < v.size() && (v[i] == 'e' || v[i] == 'E')) 
     {
@@ -244,7 +245,7 @@ bool CSVParser::load()
 	}
 
     const size_t nlCount = count_newlines(s, n);
-    const size_t estimatedRows = nlCount + ((n > 0 && s[n - 1] != '\n') ? 1 : 0);
+    const size_t estimatedRows = nlCount;
     size_t firstEnd = 0;
     while(firstEnd < n && s[firstEnd] != '\n')
         ++firstEnd;

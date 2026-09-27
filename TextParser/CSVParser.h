@@ -9,9 +9,7 @@
 #include <string_view>
 #include <optional>
 #include <memory>
-#include <utility>
 #include <algorithm>
-#include <cstdint>
 
 class CSVParser final : public TextFileParser 
 {
@@ -22,7 +20,6 @@ public:
         bool hasHeader = false;
         bool allowQuotes = true;
         bool useMMap = true;
-        bool padMissingCells = true;
         bool trimLastColumnCRSemis = true;
     };
 
@@ -50,12 +47,8 @@ private:
         const char* data = nullptr;
         size_t size = 0;
         bool mmapped = false;
-#ifdef _WIN32
         void* hFile = nullptr;
         void* hMap = nullptr;
-#else
-        int fd = -1;
-#endif
         std::vector<char> owned;
         void release();
         ~Buffer() { release(); }

@@ -35,7 +35,7 @@
 #ifdef GetObject
 #undef GetObject
 #endif
-#define TEST 1
+#define TEST 0
 using namespace std;
 
 HWND TextParserUI::hEditOutput = nullptr;
@@ -843,7 +843,7 @@ void testJSON(const JSONParser& j)
 				const auto& node = j.nodes()[v.index()];
 				for(size_t i = 0; i < v.size();++i)
 				{
-					const auto& kv = j.membersArena()[node.a +(uint32_t)i];
+					const auto& kv = j.membersArena()[node.startIndex +(uint32_t)i];
 					keys.emplace_back(kv.first);
 					auto childIdx = kv.second;
 

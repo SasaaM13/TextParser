@@ -28,8 +28,8 @@ enum class JSONType
 struct JSONNode
 {
     uint32_t type;
-    uint32_t a; 
-    uint32_t b; 
+    uint32_t startIndex; 
+    uint32_t elementSize; 
     std::string_view str; 
     std::string_view raw; 
     double num;
@@ -70,13 +70,9 @@ class JSONParser final : public TextFileParser
 public:
     struct Options
     {
-        bool preferFastPath = true;
-        bool useMMap = true;
         bool parallel = true;
         unsigned threadHint = 0;         
-        size_t fastMinSize = 64 * 1024;
         size_t maxColumnsHint = 256;      
-        bool allowBareValues = true;     
     };
 
     explicit JSONParser(std::string filename, Options opt = {}) : filename_(std::move(filename)), opt_(opt) {}

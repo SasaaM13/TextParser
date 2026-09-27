@@ -35,10 +35,8 @@ private:
     {
         const unsigned char* base = nullptr;
         size_t size = 0;
-#ifdef _WIN32
         void* hFile = nullptr;
         void* hMap = nullptr;
-#endif
         void close();
     };
 

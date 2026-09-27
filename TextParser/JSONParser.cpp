@@ -37,18 +37,18 @@ size_t JSONValue::size() const
 {
 	const auto& n = owner->nodes()[idx];
 	if(n.type == (uint32_t)JSONType::Array)
-		return n.b;
+		return n.elementSize;
 	if(n.type == (uint32_t)JSONType::Object)
-		return n.b;
+		return n.elementSize;
 	return 0;
 }
 
 JSONValue JSONValue::operator[](size_t i) const
 {
 	const auto& n = owner->nodes()[idx];
-	if(n.type != (uint32_t)JSONType::Array || i >= n.b)
+	if(n.type != (uint32_t)JSONType::Array || i >= n.elementSize)
 		return {};
-	return JSONValue(owner, owner->childrenArena()[n.a + (uint32_t)i]);
+	return JSONValue(owner, owner->childrenArena()[n.startIndex + (uint32_t)i]);
 }
 
 JSONValue JSONValue::operator[](std::string_view key) const
@@ -58,9 +58,9 @@ JSONValue JSONValue::operator[](std::string_view key) const
 	const auto& n = owner->nodes()[idx];
 	if(n.type != (uint32_t)JSONType::Object)
 		return {};
-	for(uint32_t k = 0; k < n.b; ++k)
+	for(uint32_t k = 0; k < n.elementSize; ++k)
 	{
-		const auto& kv = owner->membersArena()[n.a + k];
+		const auto& kv = owner->membersArena()[n.startIndex + k];
 		if(kv.first.size() == key.size() && std::memcmp(kv.first.data(), key.data(), key.size()) == 0)
 			return JSONValue(owner, kv.second);
 	}
@@ -209,6 +209,7 @@ bool JSONParser::parse_json_value_view(std::string_view sv, size_t& i, std::stri
 	out = sv.substr(start, i - start);
 	return true;
 }
+
 JSONParser::Mode JSONParser::detectMode(std::string_view sv) const
 {
 	size_t i = skip_bom_and_ws(sv);
@@ -435,8 +436,8 @@ size_t JSONParser::parseArrayDOM(std::string_view sv, size_t& i)
 
 		return SIZE_MAX;
 	}
-	node.a = (uint32_t)arenaChildren.size();
-	node.b = (uint32_t)localChildren.size();
+	node.startIndex = (uint32_t)arenaChildren.size();
+	node.elementSize = (uint32_t)localChildren.size();
 
 	arenaChildren.insert(arenaChildren.end(), localChildren.begin(), localChildren.end());
 
@@ -486,8 +487,8 @@ size_t JSONParser::parseObjectDOM(std::string_view sv, size_t& i)
 		}
 		return SIZE_MAX;
 	}
-	node.a = (uint32_t)arenaMembers.size();
-	node.b = (uint32_t)localMembers.size();
+	node.startIndex = (uint32_t)arenaMembers.size();
+	node.elementSize = (uint32_t)localMembers.size();
 	arenaMembers.insert(arenaMembers.end(), localMembers.begin(), localMembers.end());
 	nodes_.push_back(node);
 	return nodes_.size() - 1;
