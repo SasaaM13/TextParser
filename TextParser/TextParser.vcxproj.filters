@@ -39,6 +39,9 @@
     <ClCompile Include="TextUIParser.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\..\vcpkg\buildtrees\simdjson\src\v4.0.7-1078c6233c.clean\singleheader\simdjson.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\..\fast-cpp-csv-parser\csv.h">

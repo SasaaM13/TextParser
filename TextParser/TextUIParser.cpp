@@ -1,10 +1,10 @@
-﻿#include "TextUIParser.h"
+﻿#define _CRT_SECURE_NO_WARNINGS
+#include "TextUIParser.h"
 #include "Timer.h"
 #include "JSONParser.h"
 #include "XMLParser.h"
 #include "XLSXParser.h"
 #include "CSVParser.h"
-
 #include <commdlg.h>
 #include <sstream>
 #include <iostream>
@@ -21,12 +21,16 @@
 #pragma comment(lib, "comctl32.lib")
 #include <vssym32.h>
 #pragma execution_character_set("utf-8")
+#include "external/fast-cpp-csv-parser/csv.h"
 #include <rapidjson/document.h>
 #include <rapidjson/istreamwrapper.h>
 #include <rapidjson/error/en.h>
+#include <simdjson.h>
 #include <nlohmann/json.hpp>
 #include <tinyxml2.h>
 #include <pugixml.hpp>
+#include <xlsxio_read.h>
+#include <rapidxml/rapidxml.hpp>
 #include <vincentlaucsb-csv-parser/csv.hpp>
 #include <rapidcsv.h>
 #include <OpenXLSX/OpenXLSX.hpp>
@@ -35,7 +39,7 @@
 #ifdef GetObject
 #undef GetObject
 #endif
-#define TEST 0
+#define TEST 0 
 using namespace std;
 
 HWND TextParserUI::hEditOutput = nullptr;
@@ -44,6 +48,7 @@ static HFONT hMonoFont = nullptr;
 static HBRUSH hBgBrush = nullptr;
 static HWND hListView = nullptr;
 
+static int test_col = 50;
 
 struct ListSortCtx
 {
@@ -138,6 +143,154 @@ static bool RapidJSON_Count(const std::string& path, size_t& rows,size_t& fields
 	}
 	return true;
 }
+static void SimdJSON_CountValues(const simdjson::dom::element& v, size_t& values)
+{
+	switch(v.type())
+	{
+	case simdjson::dom::element_type::ARRAY:
+	{
+		simdjson::dom::array arr;
+		if(v.get_array().get(arr))
+			return;
+
+		for(auto child : arr)
+			SimdJSON_CountValues(child, values);
+
+		break;
+	}
+
+	case simdjson::dom::element_type::OBJECT:
+	{
+		simdjson::dom::object obj;
+		if(v.get_object().get(obj))
+			return;
+
+		for(auto field : obj)
+			SimdJSON_CountValues(field.value, values);
+
+		break;
+	}
+
+	case simdjson::dom::element_type::INT64:
+	case simdjson::dom::element_type::UINT64:
+	case simdjson::dom::element_type::DOUBLE:
+	case simdjson::dom::element_type::STRING:
+	case simdjson::dom::element_type::BOOL:
+	case simdjson::dom::element_type::NULL_VALUE:
+		++values;
+		break;
+	}
+}
+
+static void SimdJSON_ScanValues(const simdjson::dom::element& v, volatile size_t& sink)
+{
+	switch(v.type())
+	{
+	case simdjson::dom::element_type::ARRAY:
+	{
+		simdjson::dom::array arr;
+		if(v.get_array().get(arr))
+			return;
+
+		for(auto child : arr)
+			SimdJSON_ScanValues(child, sink);
+
+		break;
+	}
+
+	case simdjson::dom::element_type::OBJECT:
+	{
+		simdjson::dom::object obj;
+		if(v.get_object().get(obj))
+			return;
+
+		for(auto field : obj)
+			SimdJSON_ScanValues(field.value, sink);
+
+		break;
+	}
+
+	case simdjson::dom::element_type::STRING:
+	{
+		std::string_view s;
+		if(!v.get_string().get(s))
+			sink += s.size();
+
+		break;
+	}
+
+	case simdjson::dom::element_type::INT64:
+	{
+		int64_t x = 0;
+		if(!v.get_int64().get(x))
+			sink += (size_t)x;
+
+		break;
+	}
+
+	case simdjson::dom::element_type::UINT64:
+	{
+		uint64_t x = 0;
+		if(!v.get_uint64().get(x))
+			sink += (size_t)x;
+
+		break;
+	}
+
+	case simdjson::dom::element_type::DOUBLE:
+	{
+		double x = 0.0;
+		if(!v.get_double().get(x))
+			sink += (size_t)x;
+
+		break;
+	}
+
+	case simdjson::dom::element_type::BOOL:
+	{
+		bool x = false;
+		if(!v.get_bool().get(x))
+			sink += x;
+
+		break;
+	}
+
+	case simdjson::dom::element_type::NULL_VALUE:
+		sink += 1;
+		break;
+	}
+}
+
+static void RapidXML_CountText(rapidxml::xml_node<>* n, size_t& values)
+{
+	if(!n)
+		return;
+
+	if((n->type() == rapidxml::node_data || n->type() == rapidxml::node_cdata) &&
+		n->value() && *n->value())
+	{
+		values++;
+	}
+
+	for(auto* c = n->first_node(); c; c = c->next_sibling())
+		RapidXML_CountText(c, values);
+}
+
+static void RapidXML_ScanText(rapidxml::xml_node<>* n, volatile size_t& sink)
+{
+	if(!n)
+		return;
+
+	if((n->type() == rapidxml::node_data || n->type() == rapidxml::node_cdata) &&
+		n->value())
+	{
+		sink += strlen(n->value());
+	}
+
+	for(auto* c = n->first_node(); c; c = c->next_sibling())
+		RapidXML_ScanText(c, sink);
+}
+
 static bool NlohmannJSON_Count(const std::string& path, size_t& rows, size_t& fields, std::string* err = nullptr)
 {
 	std::ifstream ifs(path);
@@ -957,23 +1110,6 @@ void testXML(const XMLParser& x)
 
 			if(auto v = activeNode.toBool())
 				actives.push_back(*v);
-
-			auto salaryNode = user.child("salary").firstChild();
-
-			if(auto v = salaryNode.toDouble())
-				salaries.push_back(*v);
-			auto birthNode = user.child("birthDate").firstChild();
-
-			if(auto d = birthNode.toDate())
-				birthDates.push_back(*d);
-			auto scoresNode = user.child("scores");
-
-			for(auto score : scoresNode.children("score"))
-			{
-				auto txt = score.firstChild();
-				if(auto s = txt.toInt())
-					scores.push_back(*s);
-			}
 		}
 	}
 }
@@ -1111,6 +1247,42 @@ void TextParserUI::ParseFile(const std::string& filepath)
 				BenchLine b;
 				b.name = "rapidcsv";
 
+				Timer t;
+				t.start();
+
+				rapidcsv::Document doc(filepath, rapidcsv::LabelParams(-1, -1));
+
+				size_t r = doc.GetRowCount();
+				size_t c = doc.GetColumnCount();
+
+				t.end();
+				b.loadSecs = t.seconds();
+
+				size_t values = r * c;
+
+				b.scanSecs = Measure([&]()
+					{
+						volatile size_t sink = 0;
+
+						for(int rep = 0; rep < repeat; ++rep)
+							for(size_t i = 0; i < r; ++i)
+								for(size_t j = 0; j < c; ++j)
+									sink += doc.GetCell<std::string>(j, i).size();
+
+					}) / repeat;
+
+				b.ok = true;
+				b.valuesPerSec = values / safeTime(b.scanSecs);
+				b.mbPerSec = fileMB / safeTime(b.loadSecs + b.scanSecs);
+
+				return b;
+			}());
+		// ===== rapidcsv =====
+		/*lines.push_back([&]()
+			{
+				BenchLine b;
+				b.name = "rapidcsv";
+
 				std::istringstream ss(fileContent);
 
 				Timer t; t.start();
@@ -1135,9 +1307,193 @@ void TextParserUI::ParseFile(const std::string& filepath)
 				b.mbPerSec = fileMB / safeTime(b.loadSecs + b.scanSecs);
 
 				return b;
-			}());
-	}
+			}());*/
+if(test_col == 50)
+{ 
+		// ===== fast-cpp-csv-parser =====
+		lines.push_back([&]()
+			{
+				BenchLine b;
+				b.name = "fast-cpp-csv-parser";
 
+				size_t rows = 0;
+				size_t values = 0;
+
+				Timer t;
+				t.start();
+
+				try
+				{
+					io::CSVReader<50, io::trim_chars<' ', '\t'>, io::no_quote_escape<','>> in(filepath);
+
+					std::string c1, c2, c3, c4, c5, c6, c7, c8, c9, c10;
+					std::string c11, c12, c13, c14, c15, c16, c17, c18, c19, c20;
+					std::string c21, c22, c23, c24, c25, c26, c27, c28, c29, c30;
+					std::string c31, c32, c33, c34, c35, c36, c37, c38, c39, c40;
+					std::string c41, c42, c43, c44, c45, c46, c47, c48, c49, c50;
+
+					while(in.read_row(
+						c1, c2, c3, c4, c5, c6, c7, c8, c9, c10,
+						c11, c12, c13, c14, c15, c16, c17, c18, c19, c20,
+						c21, c22, c23, c24, c25, c26, c27, c28, c29, c30,
+						c31, c32, c33, c34, c35, c36, c37, c38, c39, c40,
+						c41, c42, c43, c44, c45, c46, c47, c48, c49, c50))
+					{
+						rows++;
+						values += 50;
+					}
+				}
+				catch(...)
+				{
+					return b;
+				}
+
+				t.end();
+				b.loadSecs = t.seconds();
+
+				b.scanSecs = Measure([&]()
+					{
+						volatile size_t sink = 0;
+
+						for(int rep = 0; rep < repeat; ++rep)
+						{
+							try
+							{
+								io::CSVReader<50, io::trim_chars<' ', '\t'>, io::no_quote_escape<','>> in(filepath);
+
+								std::string c1, c2, c3, c4, c5, c6, c7, c8, c9, c10;
+								std::string c11, c12, c13, c14, c15, c16, c17, c18, c19, c20;
+								std::string c21, c22, c23, c24, c25, c26, c27, c28, c29, c30;
+								std::string c31, c32, c33, c34, c35, c36, c37, c38, c39, c40;
+								std::string c41, c42, c43, c44, c45, c46, c47, c48, c49, c50;
+
+								while(in.read_row(
+									c1, c2, c3, c4, c5, c6, c7, c8, c9, c10,
+									c11, c12, c13, c14, c15, c16, c17, c18, c19, c20,
+									c21, c22, c23, c24, c25, c26, c27, c28, c29, c30,
+									c31, c32, c33, c34, c35, c36, c37, c38, c39, c40,
+									c41, c42, c43, c44, c45, c46, c47, c48, c49, c50))
+								{
+									sink += c1.size();   sink += c2.size();   sink += c3.size();   sink += c4.size();   sink += c5.size();
+									sink += c6.size();   sink += c7.size();   sink += c8.size();   sink += c9.size();   sink += c10.size();
+
+									sink += c11.size();  sink += c12.size();  sink += c13.size();  sink += c14.size();  sink += c15.size();
+									sink += c16.size();  sink += c17.size();  sink += c18.size();  sink += c19.size();  sink += c20.size();
+
+									sink += c21.size();  sink += c22.size();  sink += c23.size();  sink += c24.size();  sink += c25.size();
+									sink += c26.size();  sink += c27.size();  sink += c28.size();  sink += c29.size();  sink += c30.size();
+
+									sink += c31.size();  sink += c32.size();  sink += c33.size();  sink += c34.size();  sink += c35.size();
+									sink += c36.size();  sink += c37.size();  sink += c38.size();  sink += c39.size();  sink += c40.size();
+
+									sink += c41.size();  sink += c42.size();  sink += c43.size();  sink += c44.size();  sink += c45.size();
+									sink += c46.size();  sink += c47.size();  sink += c48.size();  sink += c49.size();  sink += c50.size();
+								}
+							}
+							catch(...)
+							{
+								return;
+							}
+						}
+					}) / repeat;
+
+				b.ok = true;
+				b.valuesPerSec = values / safeTime(b.scanSecs);
+				b.mbPerSec = fileMB / safeTime(b.loadSecs + b.scanSecs);
+
+				return b;
+			}());
+}
+else
+{
+	// ===== fast-cpp-csv-parser =====
+		lines.push_back([&]()
+			{
+				BenchLine b;
+				b.name = "fast-cpp-csv-parser";
+
+				size_t rows = 0;
+				size_t values = 0;
+
+				Timer t;
+				t.start();
+
+				try
+				{
+					io::CSVReader<30, io::trim_chars<' ', '\t'>, io::no_quote_escape<','>> in(filepath);
+
+					std::string c1, c2, c3, c4, c5, c6, c7, c8, c9, c10;
+					std::string c11, c12, c13, c14, c15, c16, c17, c18, c19, c20;
+					std::string c21, c22, c23, c24, c25, c26, c27, c28, c29, c30;
+
+					while(in.read_row(
+						c1, c2, c3, c4, c5, c6, c7, c8, c9, c10,
+						c11, c12, c13, c14, c15, c16, c17, c18, c19, c20,
+						c21, c22, c23, c24, c25, c26, c27, c28, c29, c30))
+					{
+						rows++;
+						values += 30;
+					}
+				}
+				catch(...)
+				{
+					return b;
+				}
+
+				t.end();
+				b.loadSecs = t.seconds();
+
+				b.scanSecs = Measure([&]()
+					{
+						volatile size_t sink = 0;
+
+						for(int rep = 0; rep < repeat; ++rep)
+						{
+							try
+							{
+								io::CSVReader<30, io::trim_chars<' ', '\t'>, io::no_quote_escape<','>> in(filepath);
+
+								std::string c1, c2, c3, c4, c5, c6, c7, c8, c9, c10;
+								std::string c11, c12, c13, c14, c15, c16, c17, c18, c19, c20;
+								std::string c21, c22, c23, c24, c25, c26, c27, c28, c29, c30;
+
+								while(in.read_row(
+									c1, c2, c3, c4, c5, c6, c7, c8, c9, c10,
+									c11, c12, c13, c14, c15, c16, c17, c18, c19, c20,
+									c21, c22, c23, c24, c25, c26, c27, c28, c29, c30))
+								{
+									sink += c1.size();   sink += c2.size();   sink += c3.size();
+									sink += c4.size();   sink += c5.size();   sink += c6.size();
+									sink += c7.size();   sink += c8.size();   sink += c9.size();
+									sink += c10.size();
+
+									sink += c11.size();  sink += c12.size();  sink += c13.size();
+									sink += c14.size();  sink += c15.size();  sink += c16.size();
+									sink += c17.size();  sink += c18.size();  sink += c19.size();
+									sink += c20.size();
+
+									sink += c21.size();  sink += c22.size();  sink += c23.size();
+									sink += c24.size();  sink += c25.size();  sink += c26.size();
+									sink += c27.size();  sink += c28.size();  sink += c29.size();
+									sink += c30.size();
+								}
+							}
+							catch(...)
+							{
+								return;
+							}
+						}
+					}) / repeat;
+
+				b.ok = true;
+				b.valuesPerSec = values / safeTime(b.scanSecs);
+				b.mbPerSec = fileMB / safeTime(b.loadSecs + b.scanSecs);
+
+				return b;
+			}());
+		}
+
+	}
 	// ================= JSON =================
 	else if(ext == "json")
 	{
@@ -1301,6 +1657,48 @@ void TextParserUI::ParseFile(const std::string& filepath)
 
 						for(int rep = 0; rep < repeat; ++rep)
 							scanWalk(doc);
+
+					}) / repeat;
+
+				b.ok = true;
+				b.valuesPerSec = values / safeTime(b.scanSecs);
+				b.mbPerSec = fileMB / safeTime(b.loadSecs + b.scanSecs);
+
+				return b;
+			}());
+		// ===== simdjson =====
+		lines.push_back([&]()
+			{
+				BenchLine b;
+				b.name = "simdjson";
+
+				simdjson::dom::parser parser;
+				simdjson::padded_string paddedJson(fileContent);
+
+				Timer t;
+				t.start();
+
+				simdjson::dom::element doc;
+				auto error = parser.parse(paddedJson).get(doc);
+
+				t.end();
+				b.loadSecs = t.seconds();
+
+				if(error)
+				{
+					b.err = simdjson::error_message(error);
+					return b;
+				}
+
+				size_t values = 0;
+				SimdJSON_CountValues(doc, values);
+
+				b.scanSecs = Measure([&]()
+					{
+						volatile size_t sink = 0;
+
+						for(int rep = 0; rep < repeat; ++rep)
+							SimdJSON_ScanValues(doc, sink);
 
 					}) / repeat;
 
@@ -1538,6 +1936,50 @@ void TextParserUI::ParseFile(const std::string& filepath)
 
 				return b;
 			}());
+		// ===== RapidXML =====
+		lines.push_back([&]()
+			{
+				BenchLine b;
+				b.name = "RapidXML";
+
+				std::vector<char> buffer(fileContent.begin(), fileContent.end());
+				buffer.push_back('\0');
+
+				rapidxml::xml_document<> doc;
+
+				Timer t;
+				t.start();
+
+				try
+				{
+					doc.parse<rapidxml::parse_default>(buffer.data());
+				}
+				catch(...)
+				{
+					return b;
+				}
+
+				t.end();
+				b.loadSecs = t.seconds();
+
+				size_t values = 0;
+				RapidXML_CountText(&doc, values);
+
+				b.scanSecs = Measure([&]()
+					{
+						volatile size_t sink = 0;
+
+						for(int rep = 0; rep < repeat; ++rep)
+							RapidXML_ScanText(&doc, sink);
+
+					}) / repeat;
+
+				b.ok = true;
+				b.valuesPerSec = values / safeTime(b.scanSecs);
+				b.mbPerSec = fileMB / safeTime(b.loadSecs + b.scanSecs);
+
+				return b;
+			}());
 	}
 	// ================= XLSX =================
 	else if(ext == "xlsx")
@@ -1725,6 +2167,90 @@ void TextParserUI::ParseFile(const std::string& filepath)
 				b.mbPerSec = fileMB / safeTime(b.loadSecs + b.scanSecs);
 				return b;
 			}());
+
+			// ===== XLSX I/O / libxlsxio =====
+			lines.push_back([&]()
+				{
+					BenchLine b;
+					b.name = "libxlsxio";
+
+					xlsxioreader reader = nullptr;
+					xlsxioreadersheet sheet = nullptr;
+
+					size_t rows = 0;
+					size_t values = 0;
+
+					Timer t;
+					t.start();
+
+					reader = xlsxioread_open(filepath.c_str());
+					if(!reader)
+						return b;
+
+					sheet = xlsxioread_sheet_open(reader, nullptr, XLSXIOREAD_SKIP_EMPTY_ROWS);
+					if(!sheet)
+					{
+						xlsxioread_close(reader);
+						return b;
+					}
+
+					while(xlsxioread_sheet_next_row(sheet))
+					{
+						rows++;
+
+						char* value = nullptr;
+						while((value = xlsxioread_sheet_next_cell(sheet)) != nullptr)
+						{
+							values++;
+							xlsxioread_free(value);
+						}
+					}
+
+					xlsxioread_sheet_close(sheet);
+					xlsxioread_close(reader);
+
+					t.end();
+					b.loadSecs = t.seconds();
+
+					b.scanSecs = Measure([&]()
+						{
+							volatile size_t sink = 0;
+
+							for(int rep = 0; rep < repeat; ++rep)
+							{
+								xlsxioreader r = xlsxioread_open(filepath.c_str());
+								if(!r)
+									return;
+
+								xlsxioreadersheet s = xlsxioread_sheet_open(r, nullptr, XLSXIOREAD_SKIP_EMPTY_ROWS);
+								if(!s)
+								{
+									xlsxioread_close(r);
+									return;
+								}
+
+								while(xlsxioread_sheet_next_row(s))
+								{
+									char* value = nullptr;
+
+									while((value = xlsxioread_sheet_next_cell(s)) != nullptr)
+									{
+										sink += strlen(value);
+										xlsxioread_free(value);
+									}
+								}
+
+								xlsxioread_sheet_close(s);
+								xlsxioread_close(r);
+							}
+						}) / repeat;
+
+					b.ok = true;
+					b.valuesPerSec = values / safeTime(b.scanSecs);
+					b.mbPerSec = fileMB / safeTime(b.loadSecs + b.scanSecs);
+
+					return b;
+				}());
 
 		// xlnt
 		lines.push_back([&]()

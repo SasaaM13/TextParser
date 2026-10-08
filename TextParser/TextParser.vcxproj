@@ -145,6 +145,9 @@ C:\Users\Win\vcpkg\installed\x64-windows\include;
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>
+      </AdditionalLibraryDirectories>
     </Link>
     <ItemDefinitionGroup>
       <ClCompile>
@@ -164,6 +167,7 @@ C:\Users\Win\vcpkg\installed\x64-windows\include;
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -182,6 +186,7 @@ C:\Users\Win\vcpkg\installed\x64-windows\include;
     </ItemDefinitionGroup>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="..\..\..\..\vcpkg\buildtrees\simdjson\src\v4.0.7-1078c6233c.clean\singleheader\simdjson.cpp" />
     <ClCompile Include="CSVParser.cpp" />
     <ClCompile Include="JSONParser.cpp" />
     <ClCompile Include="TextFileParser.cpp" />
